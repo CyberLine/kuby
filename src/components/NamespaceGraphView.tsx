@@ -13,6 +13,7 @@ import {
   patchLayoutStatuses,
 } from "../utils/graphLayout";
 import { buildNamespaceGraph, type GraphStatusColor } from "../utils/namespaceGraph";
+import { LoadingSpinner } from "./LoadingSpinner";
 import { ResourceIcon } from "./ResourceIcon";
 
 export type GraphOpenTarget = {
@@ -296,6 +297,10 @@ export function NamespaceGraphView(props: Props) {
     });
   }
 
+  function closeInspector() {
+    setSelectedId(null);
+  }
+
   function onPointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement | null;
@@ -315,8 +320,12 @@ export function NamespaceGraphView(props: Props) {
     scheduleCull();
   }
 
-  function onPointerUp() {
+  function onPointerUp(e: PointerEvent) {
+    if (!dragging) return;
     dragging = false;
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    if (dx * dx + dy * dy < 25) closeInspector();
   }
 
   function onWheel(e: WheelEvent) {
@@ -342,11 +351,16 @@ export function NamespaceGraphView(props: Props) {
     if (!el) return;
     measureViewport();
     el.addEventListener("wheel", onWheel, { passive: false });
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeInspector();
+    };
+    window.addEventListener("keydown", onKeyDown);
     const ro =
       typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => measureViewport()) : null;
     ro?.observe(el);
     onCleanup(() => {
       el.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKeyDown);
       ro?.disconnect();
       if (layoutTimer) clearTimeout(layoutTimer);
       if (cullRaf) cancelAnimationFrame(cullRaf);
@@ -455,10 +469,14 @@ export function NamespaceGraphView(props: Props) {
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={onPointerUp}
+          onPointerCancel={() => {
+            dragging = false;
+          }}
         >
           <Show when={props.loading}>
-            <div class="ns-graph-loading">Loading namespace resources…</div>
+            <div class="ns-graph-loading">
+              <LoadingSpinner label="Loading namespace resources…" />
+            </div>
           </Show>
           <Show when={!props.loading && !layout().nodes.length}>
             <div class="ns-graph-empty muted">
@@ -574,6 +592,15 @@ export function NamespaceGraphView(props: Props) {
                   <div class="mono">{n().name}</div>
                   <div class="muted">{n().kind}</div>
                 </div>
+                <button
+                  type="button"
+                  class="pane-close"
+                  title="Close"
+                  aria-label="Close inspector"
+                  onClick={closeInspector}
+                >
+                  ×
+                </button>
               </div>
               <dl class="ns-graph-meta">
                 <dt>Namespace</dt>

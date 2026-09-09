@@ -7,6 +7,7 @@ import {
   GRAPH_KINDS_WAVE1,
   GRAPH_KINDS_WAVE2,
   type GraphKindSpec,
+  kindIsClusterScoped,
   objectKey,
   resourceIsWatchable,
 } from "../constants/resources";
@@ -192,6 +193,8 @@ function createClusterStore() {
   } | null>(null);
   const [error, setError] = createSignal<string | null>(null);
   const [loading, setLoading] = createSignal(false);
+  const [listLoading, setListLoading] = createSignal(false);
+  const [namespacesLoading, setNamespacesLoading] = createSignal(false);
   const [visualizeNamespace, setVisualizeNamespace] = createSignal<string | null>(null);
   const [graphWatchKeys, setGraphWatchKeys] = createStore<Record<string, string>>({});
   const [graphLoading, setGraphLoading] = createSignal(false);
@@ -203,6 +206,34 @@ function createClusterStore() {
   let graphWatchGeneration = 0;
   let listWatchGeneration = 0;
   let listRefreshGeneration = 0;
+  let pendingListBuckets = new Set<string>();
+
+  function markListBucketReady(key: string) {
+    if (!pendingListBuckets.has(key)) return;
+    pendingListBuckets.delete(key);
+    if (pendingListBuckets.size === 0) setListLoading(false);
+  }
+
+  function finishListLoading(generation: number) {
+    if (generation !== listWatchGeneration) return;
+    pendingListBuckets.clear();
+    setListLoading(false);
+  }
+
+  function isClusterScopedKind(ctx: string, kind: string, apiVersion: string): boolean {
+    const discovered = (apiResources[ctx] || []).find(
+      (r) => r.kind === kind && r.apiVersion === apiVersion,
+    );
+    if (discovered && typeof discovered.namespaced === "boolean") {
+      return !discovered.namespaced;
+    }
+    return kindIsClusterScoped(kind);
+  }
+
+  function namespacesToWatch(ctx: string, kind: string, apiVersion: string): string[] {
+    if (isClusterScopedKind(ctx, kind, apiVersion)) return ["*"];
+    return selectedNamespaces[ctx] || ["default"];
+  }
 
   async function ensureWatchListener() {
     if (!watchUnlisten) {
@@ -226,13 +257,17 @@ function createClusterStore() {
         }
         const nss = selectedNamespaces[ctx] || [];
         const ns = payload.namespace || "*";
-        if (nss.length && !nss.includes("*") && ns !== "*" && !nss.includes(ns)) {
+        const clusterScoped = isClusterScopedKind(ctx, payload.kind, payload.apiVersion);
+        if (!clusterScoped && nss.length && !nss.includes("*") && ns !== "*" && !nss.includes(ns)) {
           return;
         }
         const key = `${payload.context}|${payload.kind}|${ns}`;
         if (key === lastWatchErrorKey) return;
         lastWatchErrorKey = key;
         setError(formatWatchError(payload));
+        markListBucketReady(
+          bucketKey(payload.context, payload.apiVersion, payload.kind, payload.namespace),
+        );
       });
     }
   }
@@ -290,6 +325,9 @@ function createClusterStore() {
         }
       }),
     );
+    if (payload.event === "restarted") {
+      markListBucketReady(key);
+    }
   }
 
   async function refreshContexts() {
@@ -310,6 +348,7 @@ function createClusterStore() {
       const active = await api.listActiveClusters();
       setActiveContexts(active);
       setSelectedContext(context);
+      setNamespacesLoading(true);
       try {
         applyNamespaceResult(context, await api.listNamespaces(context));
       } catch (nsErr) {
@@ -320,6 +359,8 @@ function createClusterStore() {
           restricted: true,
           defaultNamespace: "default",
         });
+      } finally {
+        setNamespacesLoading(false);
       }
       const apis = await api.listApiResources(context, true);
       setApiResources(context, apis);
@@ -333,10 +374,13 @@ function createClusterStore() {
   async function refreshNamespaces(context?: string) {
     const ctx = context || selectedContext();
     if (!ctx) return;
+    setNamespacesLoading(true);
     try {
       applyNamespaceResult(ctx, await api.listNamespaces(ctx));
     } catch (e) {
       setError(`Namespaces: ${String(e)}`);
+    } finally {
+      setNamespacesLoading(false);
     }
   }
 
@@ -646,8 +690,13 @@ function createClusterStore() {
 
   async function watchCurrent() {
     const generation = ++listWatchGeneration;
+    pendingListBuckets = new Set();
+    setListLoading(true);
     const ctx = selectedContext();
-    if (!ctx) return;
+    if (!ctx) {
+      finishListLoading(generation);
+      return;
+    }
     const { apiVersion, kind } = selectedKind();
     lastWatchErrorKey = "";
     setError(null);
@@ -656,12 +705,16 @@ function createClusterStore() {
     }
     await stopListWatches(ctx);
     if (generation !== listWatchGeneration) return;
-    if (kind === "Overview") return;
-    const nss = selectedNamespaces[ctx] || ["default"];
+    if (kind === "Overview") {
+      finishListLoading(generation);
+      return;
+    }
+    const nss = namespacesToWatch(ctx, kind, apiVersion);
     await ensureWatchListener();
     if (generation !== listWatchGeneration) return;
 
     if (kind === "Namespace" && namespaceAccess[ctx]?.restricted) {
+      finishListLoading(generation);
       return;
     }
 
@@ -672,45 +725,63 @@ function createClusterStore() {
       setError(
         `${kind} cannot be listed or watched. Kubernetes only allows creating this resource.`,
       );
+      finishListLoading(generation);
       return;
     }
 
-    for (const ns of nss) {
-      if (generation !== listWatchGeneration) return;
-      const key = bucketKey(ctx, apiVersion, kind, ns);
-      setResources(key, { byUid: {}, order: [] });
-      try {
-        const watchKey = await api.startResourceWatch(
-          ctx,
-          apiVersion,
-          kind,
-          ns === "*" ? null : ns,
-        );
-        if (generation !== listWatchGeneration) {
-          try {
-            await api.stopResourceWatch(ctx, watchKey);
-          } catch {
-            /* superseded */
-          }
-          return;
-        }
-        setWatchKeys(key, watchKey);
-      } catch (e) {
+    pendingListBuckets = new Set(nss.map((ns) => bucketKey(ctx, apiVersion, kind, ns)));
+
+    await Promise.all(
+      nss.map(async (ns) => {
         if (generation !== listWatchGeneration) return;
-        setError(
-          formatWatchError({
-            context: ctx,
-            apiVersion,
-            kind,
-            namespace: ns === "*" ? null : ns,
-            error: String(e),
-          }),
-        );
-      }
+        const key = bucketKey(ctx, apiVersion, kind, ns);
+        const namespace = ns === "*" ? null : ns;
+        try {
+          try {
+            const listed = await api.listResourcesOnce(ctx, apiVersion, kind, namespace);
+            if (generation !== listWatchGeneration) return;
+            ingestListed(key, listed, kind, apiVersion);
+            markListBucketReady(key);
+          } catch (listErr) {
+            if (generation !== listWatchGeneration) return;
+            setResources(key, { byUid: {}, order: [] });
+            console.warn("listResourcesOnce failed, waiting for watch", key, listErr);
+          }
+
+          if (generation !== listWatchGeneration) return;
+          const watchKey = await api.startResourceWatch(ctx, apiVersion, kind, namespace);
+          if (generation !== listWatchGeneration) {
+            try {
+              await api.stopResourceWatch(ctx, watchKey);
+            } catch {
+              /* superseded */
+            }
+            return;
+          }
+          setWatchKeys(key, watchKey);
+        } catch (e) {
+          if (generation !== listWatchGeneration) return;
+          markListBucketReady(key);
+          setError(
+            formatWatchError({
+              context: ctx,
+              apiVersion,
+              kind,
+              namespace,
+              error: String(e),
+            }),
+          );
+        }
+      }),
+    );
+
+    if (generation === listWatchGeneration && pendingListBuckets.size === 0) {
+      setListLoading(false);
     }
 
-    if (kind === "Node") {
-      await syncNodePodSidecars(ctx);
+    // Pod counts for the Node column must not block first paint.
+    if (kind === "Node" && generation === listWatchGeneration) {
+      void syncNodePodSidecars(ctx);
     }
   }
 
@@ -720,7 +791,7 @@ function createClusterStore() {
     const { apiVersion, kind } = selectedKind();
     if (kind === "Overview") return;
     if (kind === "Namespace" && namespaceAccess[ctx]?.restricted) return;
-    const nss = selectedNamespaces[ctx] || ["default"];
+    const nss = namespacesToWatch(ctx, kind, apiVersion);
     const generation = ++listRefreshGeneration;
 
     const targets: { apiVersion: string; kind: string; namespace: string | null }[] = nss.map(
@@ -800,7 +871,7 @@ function createClusterStore() {
         return name.includes(q);
       });
     }
-    const nss = selectedNamespaces[ctx] || ["default"];
+    const nss = namespacesToWatch(ctx, kind, apiVersion);
     const all: K8sObject[] = [];
     for (const ns of nss) {
       const key = bucketKey(ctx, apiVersion, kind, ns);
@@ -833,7 +904,7 @@ function createClusterStore() {
     if (kind === "Namespace" && namespaceAccess[ctx]?.restricted) {
       return restrictedNamespaceObjects(ctx).find((o) => objectKey(o) === key) || null;
     }
-    const nss = selectedNamespaces[ctx] || ["default"];
+    const nss = namespacesToWatch(ctx, kind, apiVersion);
     for (const ns of nss) {
       const bucket = resources[bucketKey(ctx, apiVersion, kind, ns)];
       if (!bucket) continue;
@@ -901,6 +972,8 @@ function createClusterStore() {
     error,
     clearError: () => setError(null),
     loading,
+    listLoading,
+    namespacesLoading,
     refreshContexts,
     refreshNamespaces,
     connect,

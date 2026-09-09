@@ -17,12 +17,56 @@ Native multi-cluster Kubernetes desktop client built with **Tauri 2**, **Rust (`
 
 ## Develop
 
+Requires **Node 22+**, **pnpm 11**, **Rust stable** (`rust-toolchain.toml`), and a valid `~/.kube/config` (or `KUBECONFIG`). After the platform tooling below:
+
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-Requires Rust stable, Node 22+/pnpm, and a valid `~/.kube/config` (or `KUBECONFIG`).
+### macOS tooling
+
+Xcode Command Line Tools and a rustup-managed toolchain (Homebrew `rust` / system compilers are not enough on their own):
+
+```bash
+xcode-select --install
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version
+```
+
+Optional: `brew install gitleaks` for the local Lefthook secret scan.
+
+### Linux tooling (Debian / Ubuntu / Mint)
+
+Do **not** install Cargo via `apt` — that package is too old for Tauri 2. Use rustup:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version
+```
+
+Then the WebKitGTK / GTK libraries used by `pnpm tauri dev` and `pnpm tauri build`:
+
+```bash
+sudo apt update
+sudo apt install -y \
+  libwebkit2gtk-4.1-dev \
+  libgtk-3-dev \
+  libayatana-appindicator3-dev \
+  librsvg2-dev \
+  patchelf \
+  libssl-dev \
+  pkg-config \
+  build-essential \
+  curl wget file \
+  libxdo-dev
+```
+
+If `pnpm tauri dev` fails with `No such file or directory` on `cargo metadata`, `cargo` is missing from `PATH` — open a new terminal or run `source "$HOME/.cargo/env"`.
 
 ## Quality and security
 
@@ -40,14 +84,8 @@ Dependabot opens weekly PRs for npm, Cargo, and GitHub Actions.
 
 ```bash
 pnpm tauri build
+
 ```
-
-### Distribution / signing (Phase 5)
-
-- **macOS**: set `APPLE_SIGNING_IDENTITY` / notarization credentials; `tauri.conf.json` enables `hardenedRuntime`. Replace `bundle.macOS.signingIdentity` when ready.
-- **Linux**: AppImage, deb, and rpm targets are enabled under `bundle.targets`.
-- **Auto-update**: `tauri-plugin-updater` is wired. Generate a real minisign keypair (`tauri signer generate`) and replace `plugins.updater.pubkey` + release `endpoints`.
-
 ## Architecture
 
 ```

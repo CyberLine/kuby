@@ -95,9 +95,14 @@ const CLUSTER_SCOPED_KINDS = new Set([
   "ClusterRoleBinding",
 ]);
 
+/** Cluster-scoped APIs ignore the sidebar namespace selection. */
+export function kindIsClusterScoped(kind: string): boolean {
+  return CLUSTER_SCOPED_KINDS.has(kind);
+}
+
 /** Namespace column is empty for cluster-scoped types. */
 export function kindHasNamespaceColumn(kind: string): boolean {
-  return !CLUSTER_SCOPED_KINDS.has(kind);
+  return !kindIsClusterScoped(kind);
 }
 
 /** CPU/Mem is only populated for pods and nodes. */

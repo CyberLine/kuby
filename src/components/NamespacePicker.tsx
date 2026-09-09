@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { clusterStore } from "../stores/cluster";
+import { LoadingSpinner } from "./LoadingSpinner";
 
 export function NamespacePicker() {
   const store = clusterStore;
@@ -7,6 +8,7 @@ export function NamespacePicker() {
   const ctx = () => store.selectedContext();
   const access = () => store.namespaceAccess[ctx()];
   const restricted = () => Boolean(access()?.restricted);
+  const nsLoading = () => store.namespacesLoading();
   const selectedExtras = createMemo(() => {
     const selected = new Set(store.selectedNamespaces[ctx()] || []);
     return (store.extraNamespaces[ctx()] || []).filter((n) => selected.has(n));
@@ -33,35 +35,43 @@ export function NamespacePicker() {
         </span>
         <button
           type="button"
-          class="btn ghost ns-refresh"
-          disabled={!ctx()}
+          class={`btn ghost ns-refresh ${nsLoading() ? "is-loading" : ""}`}
+          disabled={!ctx() || nsLoading()}
           onClick={() => void store.refreshNamespaces()}
           title="Reload namespaces"
         >
           ↻
         </button>
       </label>
-      <select
-        multiple
-        class="ns-select"
-        value={store.selectedNamespaces[ctx()] || []}
-        onChange={(e) => {
-          const opts = Array.from(e.currentTarget.selectedOptions).map((o) => o.value);
-          store.setSelectedNamespaces(ctx(), opts);
-        }}
-      >
-        <Show when={!restricted()}>
-          <option value="*">All namespaces</option>
+      <div class="ns-select-wrap">
+        <select
+          multiple
+          class="ns-select"
+          disabled={nsLoading()}
+          value={store.selectedNamespaces[ctx()] || []}
+          onChange={(e) => {
+            const opts = Array.from(e.currentTarget.selectedOptions).map((o) => o.value);
+            store.setSelectedNamespaces(ctx(), opts);
+          }}
+        >
+          <Show when={!restricted()}>
+            <option value="*">All namespaces</option>
+          </Show>
+          <For each={store.namespaces[ctx()] || []}>
+            {(ns) => (
+              <option value={ns}>
+                {ns}
+                {store.isExtraNamespace(ctx(), ns) ? " (added)" : ""}
+              </option>
+            )}
+          </For>
+        </select>
+        <Show when={nsLoading()}>
+          <div class="ns-loading-overlay">
+            <LoadingSpinner label="Loading namespaces…" />
+          </div>
         </Show>
-        <For each={store.namespaces[ctx()] || []}>
-          {(ns) => (
-            <option value={ns}>
-              {ns}
-              {store.isExtraNamespace(ctx(), ns) ? " (added)" : ""}
-            </option>
-          )}
-        </For>
-      </select>
+      </div>
       <Show when={restricted()}>
         <p class="ns-hint">
           Cannot list cluster namespaces. Seeded from kubeconfig

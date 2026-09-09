@@ -392,7 +392,19 @@ input,
   font-size: 12px;
 }
 
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.sidebar-nav.is-disabled {
+  opacity: 0.4;
+}
+
 .nav-toggle {
+  flex-shrink: 0;
   padding: 0 4px;
 }
 
@@ -687,7 +699,16 @@ input,
 }
 
 .list-pane {
+  position: relative;
   border-right: 1px solid var(--border);
+}
+
+.list-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .content.with-detail .list-pane {
@@ -997,8 +1018,29 @@ body.is-col-resizing .cm-editor {
 .detail-tabs {
   display: flex;
   gap: 2px;
+  align-items: flex-end;
   padding: 8px 10px 0;
   border-bottom: 1px solid var(--border);
+}
+
+.pane-close {
+  margin-left: auto;
+  margin-bottom: 4px;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-close:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 
 .tab {
@@ -1229,6 +1271,70 @@ body.is-col-resizing .cm-editor {
 .empty {
   padding: 24px;
   color: var(--muted);
+}
+
+.empty:has(.loading-spinner) {
+  display: flex;
+  justify-content: center;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.loading-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.loading-spinner-icon {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.list-status {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+
+.ns-select-wrap {
+  position: relative;
+}
+
+.ns-select-wrap .ns-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.ns-refresh.is-loading {
+  pointer-events: none;
+  opacity: 0.7;
 }
 
 @media (max-width: 1100px) {
@@ -2277,6 +2383,15 @@ html[data-theme="light"] .about-overlay {
   display: flex;
   align-items: flex-start;
   gap: 10px;
+}
+
+.ns-graph-inspector-head > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.ns-graph-inspector-head .pane-close {
+  margin-bottom: 0;
 }
 
 .ns-graph-meta {

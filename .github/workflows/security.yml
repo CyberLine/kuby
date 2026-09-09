@@ -38,6 +38,7 @@ jobs:
       - uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
         with:
           scan-args: |-
+            --config=osv-scanner.toml
             --lockfile=pnpm-lock.yaml
             --lockfile=src-tauri/Cargo.lock
 
@@ -50,9 +51,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: gitleaks
+      - name: Install gitleaks
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$HOME/bin"
+          gh release download --repo gitleaks/gitleaks --pattern 'gitleaks_*_linux_x64.tar.gz' --dir /tmp/gitleaks
+          tar -xzf /tmp/gitleaks/gitleaks_*_linux_x64.tar.gz -C "$HOME/bin" gitleaks
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          "$HOME/bin/gitleaks" version
 
       - name: Scan
         run: gitleaks detect --source . --verbose --redact --no-banner

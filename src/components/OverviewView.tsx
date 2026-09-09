@@ -1,6 +1,7 @@
 import { createEffect, createSignal, For, Show } from "solid-js";
 import { api } from "../api/tauri";
 import type { OverviewCard, OverviewOpenTarget, WorkloadOverview } from "../types";
+import { LoadingSpinner } from "./LoadingSpinner";
 
 type Props = {
   context: string;
@@ -78,7 +79,9 @@ export function OverviewView(props: Props) {
       </Show>
 
       <Show when={loading() && !data()}>
-        <div class="empty">Loading overview…</div>
+        <div class="empty">
+          <LoadingSpinner label="Loading overview…" />
+        </div>
       </Show>
 
       <Show when={data()}>

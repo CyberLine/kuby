@@ -1,5 +1,14 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  untrack,
+} from "solid-js";
 import { api } from "./api/tauri";
 import { checkForUpdates } from "./api/updater";
 import logo from "./assets/logo.png";
@@ -7,6 +16,7 @@ import { AboutDialog } from "./components/AboutDialog";
 import { CodeEditor } from "./components/CodeEditor";
 import { ContextPicker } from "./components/ContextPicker";
 import { ExecTerminal } from "./components/ExecTerminal";
+import { LoadingSpinner } from "./components/LoadingSpinner";
 import { LogViewer } from "./components/LogViewer";
 import { NamespaceGraphView } from "./components/NamespaceGraphView";
 import { NamespacePicker } from "./components/NamespacePicker";
@@ -394,7 +404,11 @@ function App() {
     const kind = store.selectedKind();
     const nss = store.selectedNamespaces[ctx];
     if (!showWelcome() && ctx && kind && nss) {
-      void store.watchCurrent();
+      // watchCurrent reads watchKeys/resources synchronously before its first await.
+      // Without untrack those writes retrigger this effect and restart the spinner.
+      untrack(() => {
+        void store.watchCurrent();
+      });
     }
   });
 
@@ -560,7 +574,9 @@ function App() {
     const nss = store.selectedNamespaces[ctx];
     if (!ctx || !nss) return;
     if (kind === "Pod" || kind === "Node") {
-      void loadMetrics(false);
+      untrack(() => {
+        void loadMetrics(false);
+      });
     }
   });
 
@@ -745,6 +761,11 @@ function App() {
       if (obj) next.add(objectKey(obj));
     }
     setChecked(next);
+  }
+
+  function closeDetailPanel() {
+    store.setSelectedObjectKey(null);
+    setPanel("detail");
   }
 
   function onRowClick(obj: K8sObject, index: number, e: MouseEvent) {
@@ -1219,13 +1240,34 @@ function App() {
         persistDetailWidth(next);
       }
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (showAbout()) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (ctxMenu()) {
+        setCtxMenu(null);
+        return;
+      }
+      if (store.selectedObjectKey()) closeDetailPanel();
+    };
     window.addEventListener("click", close);
     window.addEventListener("blur", close);
     window.addEventListener("resize", onWinResize);
+    window.addEventListener("keydown", onKeyDown);
     onCleanup(() => {
       window.removeEventListener("click", close);
       window.removeEventListener("blur", close);
       window.removeEventListener("resize", onWinResize);
+      window.removeEventListener("keydown", onKeyDown);
       document.body.classList.remove("is-col-resizing");
     });
   });
@@ -1321,79 +1363,89 @@ function App() {
               </Show>
             </div>
 
-            <NamespacePicker />
+            <div
+              class={`sidebar-nav ${store.visualizeNamespace() ? "is-disabled" : ""}`}
+              inert={Boolean(store.visualizeNamespace()) || undefined}
+              title={
+                store.visualizeNamespace()
+                  ? "Close visualization to change namespaces or resources"
+                  : undefined
+              }
+            >
+              <NamespacePicker />
 
-            <div class="nav-toggle">
-              <button class="btn ghost" onClick={() => setShowAllApis((v) => !v)}>
-                {showAllApis() ? "Curated views" : "All API resources"}
-              </button>
-            </div>
+              <div class="nav-toggle">
+                <button class="btn ghost" onClick={() => setShowAllApis((v) => !v)}>
+                  {showAllApis() ? "Curated views" : "All API resources"}
+                </button>
+              </div>
 
-            <nav class="nav">
-              <For each={navGroups()}>
-                {([group, items]) => {
-                  const collapsed = () => collapsedNavGroups().has(group);
-                  const hasActive = () => {
-                    const sel = store.selectedKind();
-                    return items.some(
-                      (item) => item.kind === sel.kind && item.apiVersion === sel.apiVersion,
+              <nav class="nav">
+                <For each={navGroups()}>
+                  {([group, items]) => {
+                    const collapsed = () => collapsedNavGroups().has(group);
+                    const hasActive = () => {
+                      const sel = store.selectedKind();
+                      return items.some(
+                        (item) => item.kind === sel.kind && item.apiVersion === sel.apiVersion,
+                      );
+                    };
+                    return (
+                      <div class={`nav-group ${collapsed() ? "collapsed" : ""}`}>
+                        <button
+                          type="button"
+                          class={`nav-group-title ${collapsed() && hasActive() ? "has-active" : ""}`}
+                          aria-expanded={!collapsed()}
+                          onClick={() => toggleNavGroup(group)}
+                        >
+                          <svg class="nav-group-chevron" viewBox="0 0 12 12" aria-hidden="true">
+                            <path
+                              d="M3 4.5 L6 8 L9 4.5"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.5"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            />
+                          </svg>
+                          <span class="nav-group-label">{group}</span>
+                        </button>
+                        <Show when={!collapsed()}>
+                          <div class="nav-group-items">
+                            <For each={items}>
+                              {(item) => (
+                                <button
+                                  class={`nav-item ${
+                                    store.selectedKind().kind === item.kind &&
+                                    store.selectedKind().apiVersion === item.apiVersion
+                                      ? "active"
+                                      : ""
+                                  }`}
+                                  onClick={() => {
+                                    store.setSelectedKind({
+                                      apiVersion: item.apiVersion,
+                                      kind: item.kind,
+                                    });
+                                    store.setSelectedObjectKey(null);
+                                    store.clearListFilters();
+                                    setPendingSelectName(null);
+                                    clearChecked();
+                                    setCtxMenu(null);
+                                  }}
+                                >
+                                  <ResourceIcon kind={item.kind} />
+                                  <span class="nav-item-label">{item.kind}</span>
+                                </button>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
+                      </div>
                     );
-                  };
-                  return (
-                    <div class={`nav-group ${collapsed() ? "collapsed" : ""}`}>
-                      <button
-                        type="button"
-                        class={`nav-group-title ${collapsed() && hasActive() ? "has-active" : ""}`}
-                        aria-expanded={!collapsed()}
-                        onClick={() => toggleNavGroup(group)}
-                      >
-                        <svg class="nav-group-chevron" viewBox="0 0 12 12" aria-hidden="true">
-                          <path
-                            d="M3 4.5 L6 8 L9 4.5"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="1.5"
-                            stroke-linecap="round"
-                            stroke-linejoin="round"
-                          />
-                        </svg>
-                        <span class="nav-group-label">{group}</span>
-                      </button>
-                      <Show when={!collapsed()}>
-                        <div class="nav-group-items">
-                          <For each={items}>
-                            {(item) => (
-                              <button
-                                class={`nav-item ${
-                                  store.selectedKind().kind === item.kind &&
-                                  store.selectedKind().apiVersion === item.apiVersion
-                                    ? "active"
-                                    : ""
-                                }`}
-                                onClick={() => {
-                                  store.setSelectedKind({
-                                    apiVersion: item.apiVersion,
-                                    kind: item.kind,
-                                  });
-                                  store.setSelectedObjectKey(null);
-                                  store.clearListFilters();
-                                  setPendingSelectName(null);
-                                  clearChecked();
-                                  setCtxMenu(null);
-                                }}
-                              >
-                                <ResourceIcon kind={item.kind} />
-                                <span class="nav-item-label">{item.kind}</span>
-                              </button>
-                            )}
-                          </For>
-                        </div>
-                      </Show>
-                    </div>
-                  );
-                }}
-              </For>
-            </nav>
+                  }}
+                </For>
+              </nav>
+            </div>
           </aside>
 
           <main class="main">
@@ -1552,178 +1604,187 @@ function App() {
                               </div>
                             </div>
                           </Show>
-                          <VirtualList
-                            items={sortedObjects()}
-                            itemHeight={36}
-                            class="resource-list"
-                            header={
-                              <div class={`row head ${listColumns().colsClass}`}>
-                                <label class="row-check" title="Select all">
-                                  <input
-                                    type="checkbox"
-                                    checked={
-                                      sortedObjects().length > 0 &&
-                                      sortedObjects().every((o) => checkedKeys().has(objectKey(o)))
-                                    }
-                                    onChange={(e) => {
-                                      if (e.currentTarget.checked) {
-                                        setChecked(
-                                          new Set(sortedObjects().map((o) => objectKey(o))),
-                                        );
-                                      } else {
-                                        clearChecked();
-                                      }
-                                    }}
-                                  />
-                                </label>
-                                <button
-                                  type="button"
-                                  class={`sort-btn ${sortKey() === "name" ? "active" : ""}`}
-                                  onClick={() => toggleSort("name")}
-                                >
-                                  Name{sortIndicator("name")}
-                                </button>
-                                <Show when={listColumns().showNamespace}>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "namespace" ? "active" : ""}`}
-                                    onClick={() => toggleSort("namespace")}
-                                  >
-                                    Namespace{sortIndicator("namespace")}
-                                  </button>
-                                </Show>
-                                <Show when={listColumns().showVersion}>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "version" ? "active" : ""}`}
-                                    onClick={() => toggleSort("version")}
-                                  >
-                                    Version{sortIndicator("version")}
-                                  </button>
-                                </Show>
-                                <button
-                                  type="button"
-                                  class={`sort-btn ${sortKey() === "status" ? "active" : ""}`}
-                                  onClick={() => toggleSort("status")}
-                                >
-                                  Status{sortIndicator("status")}
-                                </button>
-                                <Show when={listColumns().showPods}>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "pods" ? "active" : ""}`}
-                                    onClick={() => toggleSort("pods")}
-                                  >
-                                    Pods{sortIndicator("pods")}
-                                  </button>
-                                </Show>
-                                <Show when={listColumns().showMetrics}>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "metrics" ? "active" : ""}`}
-                                    onClick={() => toggleSort("metrics")}
-                                  >
-                                    CPU / Mem{sortIndicator("metrics")}
-                                  </button>
-                                </Show>
-                                <button
-                                  type="button"
-                                  class={`sort-btn ${sortKey() === "age" ? "active" : ""}`}
-                                  onClick={() => toggleSort("age")}
-                                >
-                                  Age{sortIndicator("age")}
-                                </button>
-                              </div>
-                            }
-                            renderItem={(obj, index) => {
-                              const key = objectKey(obj);
-                              const name = objectName(obj);
-                              const ns = objectNamespace(obj) || "—";
-                              const labels = statusLabelsFor(obj);
-                              const phaseTitle = labels.map((l) => l.text).join(", ");
-                              return (
-                                <div
-                                  class={`row ${listColumns().colsClass} ${store.selectedObjectKey() === key ? "selected" : ""} ${
-                                    checkedKeys().has(key) ? "checked" : ""
-                                  }`}
-                                  onClick={(e) => onRowClick(obj, index, e)}
-                                  onContextMenu={(e) => onRowContextMenu(obj, index, e)}
-                                  role="button"
-                                  tabIndex={0}
-                                >
-                                  <label
-                                    class="row-check"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onDblClick={(e) => e.stopPropagation()}
-                                  >
+                          <div class="list-body" aria-busy={store.listLoading()}>
+                            <VirtualList
+                              items={sortedObjects()}
+                              itemHeight={36}
+                              class="resource-list"
+                              header={
+                                <div class={`row head ${listColumns().colsClass}`}>
+                                  <label class="row-check" title="Select all">
                                     <input
                                       type="checkbox"
-                                      checked={checkedKeys().has(key)}
-                                      onChange={() => {
-                                        toggleChecked(key);
-                                        setLastClickedIndex(index);
+                                      checked={
+                                        sortedObjects().length > 0 &&
+                                        sortedObjects().every((o) =>
+                                          checkedKeys().has(objectKey(o)),
+                                        )
+                                      }
+                                      onChange={(e) => {
+                                        if (e.currentTarget.checked) {
+                                          setChecked(
+                                            new Set(sortedObjects().map((o) => objectKey(o))),
+                                          );
+                                        } else {
+                                          clearChecked();
+                                        }
                                       }}
                                     />
                                   </label>
-                                  <span class="mono name-with-action" title={name}>
-                                    <span class="name-text">{name}</span>
-                                    <Show when={store.selectedKind().kind === "Namespace"}>
-                                      <button
-                                        type="button"
-                                        class="btn ghost row-visualize"
-                                        title={`Visualize ${name}`}
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          void openVisualize(name);
-                                        }}
-                                      >
-                                        Visualize
-                                      </button>
-                                    </Show>
-                                  </span>
+                                  <button
+                                    type="button"
+                                    class={`sort-btn ${sortKey() === "name" ? "active" : ""}`}
+                                    onClick={() => toggleSort("name")}
+                                  >
+                                    Name{sortIndicator("name")}
+                                  </button>
                                   <Show when={listColumns().showNamespace}>
-                                    <span title={ns}>{ns}</span>
+                                    <button
+                                      type="button"
+                                      class={`sort-btn ${sortKey() === "namespace" ? "active" : ""}`}
+                                      onClick={() => toggleSort("namespace")}
+                                    >
+                                      Namespace{sortIndicator("namespace")}
+                                    </button>
                                   </Show>
                                   <Show when={listColumns().showVersion}>
-                                    <span class="status-labels">
-                                      <Show
-                                        when={nodeKubeletVersion(obj)}
-                                        fallback={<span class="muted">—</span>}
-                                      >
-                                        {(v) => <span class="status-label muted">{v()}</span>}
-                                      </Show>
-                                    </span>
-                                  </Show>
-                                  <span class="status-labels" title={phaseTitle}>
-                                    <For each={labels}>
-                                      {(label) => (
-                                        <span class={`status-label ${label.tone}`}>
-                                          {label.text}
-                                        </span>
-                                      )}
-                                    </For>
-                                  </span>
-                                  <Show when={listColumns().showPods}>
-                                    <span
-                                      class="muted"
-                                      title="Running pods / allocatable pod limit"
+                                    <button
+                                      type="button"
+                                      class={`sort-btn ${sortKey() === "version" ? "active" : ""}`}
+                                      onClick={() => toggleSort("version")}
                                     >
-                                      {podsForNode(obj)}
-                                    </span>
+                                      Version{sortIndicator("version")}
+                                    </button>
+                                  </Show>
+                                  <button
+                                    type="button"
+                                    class={`sort-btn ${sortKey() === "status" ? "active" : ""}`}
+                                    onClick={() => toggleSort("status")}
+                                  >
+                                    Status{sortIndicator("status")}
+                                  </button>
+                                  <Show when={listColumns().showPods}>
+                                    <button
+                                      type="button"
+                                      class={`sort-btn ${sortKey() === "pods" ? "active" : ""}`}
+                                      onClick={() => toggleSort("pods")}
+                                    >
+                                      Pods{sortIndicator("pods")}
+                                    </button>
                                   </Show>
                                   <Show when={listColumns().showMetrics}>
-                                    <span class="muted">{metricFor(obj)}</span>
+                                    <button
+                                      type="button"
+                                      class={`sort-btn ${sortKey() === "metrics" ? "active" : ""}`}
+                                      onClick={() => toggleSort("metrics")}
+                                    >
+                                      CPU / Mem{sortIndicator("metrics")}
+                                    </button>
                                   </Show>
-                                  <span class="muted">
-                                    {ageFromTimestamp(obj.metadata?.creationTimestamp as string)}
-                                  </span>
+                                  <button
+                                    type="button"
+                                    class={`sort-btn ${sortKey() === "age" ? "active" : ""}`}
+                                    onClick={() => toggleSort("age")}
+                                  >
+                                    Age{sortIndicator("age")}
+                                  </button>
                                 </div>
-                              );
-                            }}
-                          />
-                          <Show when={!sortedObjects().length}>
-                            <div class="empty">{emptyListMessage()}</div>
-                          </Show>
+                              }
+                              renderItem={(obj, index) => {
+                                const key = objectKey(obj);
+                                const name = objectName(obj);
+                                const ns = objectNamespace(obj) || "—";
+                                const labels = statusLabelsFor(obj);
+                                const phaseTitle = labels.map((l) => l.text).join(", ");
+                                return (
+                                  <div
+                                    class={`row ${listColumns().colsClass} ${store.selectedObjectKey() === key ? "selected" : ""} ${
+                                      checkedKeys().has(key) ? "checked" : ""
+                                    }`}
+                                    onClick={(e) => onRowClick(obj, index, e)}
+                                    onContextMenu={(e) => onRowContextMenu(obj, index, e)}
+                                    role="button"
+                                    tabIndex={0}
+                                  >
+                                    <label
+                                      class="row-check"
+                                      onClick={(e) => e.stopPropagation()}
+                                      onDblClick={(e) => e.stopPropagation()}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={checkedKeys().has(key)}
+                                        onChange={() => {
+                                          toggleChecked(key);
+                                          setLastClickedIndex(index);
+                                        }}
+                                      />
+                                    </label>
+                                    <span class="mono name-with-action" title={name}>
+                                      <span class="name-text">{name}</span>
+                                      <Show when={store.selectedKind().kind === "Namespace"}>
+                                        <button
+                                          type="button"
+                                          class="btn ghost row-visualize"
+                                          title={`Visualize ${name}`}
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void openVisualize(name);
+                                          }}
+                                        >
+                                          Visualize
+                                        </button>
+                                      </Show>
+                                    </span>
+                                    <Show when={listColumns().showNamespace}>
+                                      <span title={ns}>{ns}</span>
+                                    </Show>
+                                    <Show when={listColumns().showVersion}>
+                                      <span class="status-labels">
+                                        <Show
+                                          when={nodeKubeletVersion(obj)}
+                                          fallback={<span class="muted">—</span>}
+                                        >
+                                          {(v) => <span class="status-label muted">{v()}</span>}
+                                        </Show>
+                                      </span>
+                                    </Show>
+                                    <span class="status-labels" title={phaseTitle}>
+                                      <For each={labels}>
+                                        {(label) => (
+                                          <span class={`status-label ${label.tone}`}>
+                                            {label.text}
+                                          </span>
+                                        )}
+                                      </For>
+                                    </span>
+                                    <Show when={listColumns().showPods}>
+                                      <span
+                                        class="muted"
+                                        title="Running pods / allocatable pod limit"
+                                      >
+                                        {podsForNode(obj)}
+                                      </span>
+                                    </Show>
+                                    <Show when={listColumns().showMetrics}>
+                                      <span class="muted">{metricFor(obj)}</span>
+                                    </Show>
+                                    <span class="muted">
+                                      {ageFromTimestamp(obj.metadata?.creationTimestamp as string)}
+                                    </span>
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Show when={store.listLoading() && !sortedObjects().length}>
+                              <div class="list-status">
+                                <LoadingSpinner label={`Loading ${store.selectedKind().kind}…`} />
+                              </div>
+                            </Show>
+                            <Show when={!store.listLoading() && !sortedObjects().length}>
+                              <div class="list-status">{emptyListMessage()}</div>
+                            </Show>
+                          </div>
                         </section>
 
                         <Show when={store.selectedObjectKey()}>
@@ -1757,6 +1818,15 @@ function App() {
                                         </button>
                                       )}
                                     </For>
+                                    <button
+                                      type="button"
+                                      class="pane-close"
+                                      title="Close"
+                                      aria-label="Close detail panel"
+                                      onClick={closeDetailPanel}
+                                    >
+                                      ×
+                                    </button>
                                   </div>
 
                                   <div class="detail-actions">
