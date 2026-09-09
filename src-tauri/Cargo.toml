@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 tracing = "0.1"
-similar = "2"
+similar = "3"
 kube = { version = "4", default-features = true, features = ["runtime", "derive", "ws", "oidc", "oauth", "jsonpatch"] }
 json-patch = "4"
 k8s-openapi = { version = "0.28", features = ["latest"] }
