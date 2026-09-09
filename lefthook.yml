@@ -1,0 +1,37 @@
+min_version: 2.0.0
+
+# GUI Git clients (PhpStorm, GitHub Desktop, …) do not load the shell profile,
+# so rustup and Homebrew are missing from PATH.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome
+      glob: "*.{ts,tsx,js,jsx,json,css,html}"
+      exclude:
+        - pnpm-lock.yaml
+        - src-tauri/gen/**
+        - src-tauri/target/**
+      run: |
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        pnpm exec biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+
+    - name: rustfmt
+      glob: "*.rs"
+      exclude:
+        - src-tauri/target/**
+        - src-tauri/gen/**
+      run: |
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        rustfmt --edition 2021 {staged_files}
+      stage_fixed: true
+
+    - name: gitleaks
+      run: |
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        if command -v gitleaks >/dev/null 2>&1; then
+          gitleaks protect --staged --redact --no-banner
+        else
+          echo "gitleaks not installed; skipping local secret scan."
+          echo "Install with: brew install gitleaks"
+        fi
