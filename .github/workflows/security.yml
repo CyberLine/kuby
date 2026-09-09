@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: google/osv-scanner-action/osv-scanner-action@v2.3.8
+      - uses: google/osv-scanner-action/osv-scanner-action@v2.5.1
         with:
           scan-args: |-
             --config=osv-scanner.toml
