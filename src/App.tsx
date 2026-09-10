@@ -66,8 +66,8 @@ import {
   availableColumns,
   buildGridTemplate,
   type ColumnPrefs,
-  type ListColumnId,
   LIST_COLUMN_META,
+  type ListColumnId,
   persistColumnPrefs,
   podNodeName,
   readColumnPrefs,
@@ -1322,12 +1322,7 @@ function App() {
 
   function onToggleListColumn(id: ListColumnId) {
     updateColumnPrefs(
-      toggleColumnHidden(
-        columnPrefs(),
-        store.selectedKind().kind,
-        listAvailableColumns(),
-        id,
-      ),
+      toggleColumnHidden(columnPrefs(), store.selectedKind().kind, listAvailableColumns(), id),
     );
   }
 
@@ -1713,11 +1708,7 @@ function App() {
                             return (
                               <label
                                 class={`columns-menu-item ${meta.hideable ? "" : "disabled"}`}
-                                title={
-                                  meta.hideable
-                                    ? undefined
-                                    : "This column cannot be hidden"
-                                }
+                                title={meta.hideable ? undefined : "This column cannot be hidden"}
                               >
                                 <input
                                   type="checkbox"

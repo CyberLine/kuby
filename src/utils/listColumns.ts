@@ -119,11 +119,7 @@ export function toggleColumnHidden(
   };
 }
 
-export function setColumnWidth(
-  prefs: ColumnPrefs,
-  id: ListColumnId,
-  px: number,
-): ColumnPrefs {
+export function setColumnWidth(prefs: ColumnPrefs, id: ListColumnId, px: number): ColumnPrefs {
   const meta = LIST_COLUMN_META[id];
   const next = Math.max(meta.minPx, Math.round(px));
   return {

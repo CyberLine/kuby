@@ -79,14 +79,11 @@ pub async fn list_namespaces(
 fn is_valid_namespace_name(name: &str) -> bool {
     let len = name.len();
     (1..=63).contains(&len)
-        && name
-            .bytes()
-            .enumerate()
-            .all(|(i, b)| match b {
-                b'a'..=b'z' | b'0'..=b'9' => true,
-                b'-' => i > 0 && i + 1 < len,
-                _ => false,
-            })
+        && name.bytes().enumerate().all(|(i, b)| match b {
+            b'a'..=b'z' | b'0'..=b'9' => true,
+            b'-' => i > 0 && i + 1 < len,
+            _ => false,
+        })
 }
 
 #[tauri::command]
@@ -100,9 +97,7 @@ pub async fn create_namespace(
         return Err(KubyError::Message(if name.is_empty() {
             "Enter a namespace name.".into()
         } else {
-            format!(
-                "Invalid namespace \"{name}\". Use a DNS label (lowercase, digits, hyphens)."
-            )
+            format!("Invalid namespace \"{name}\". Use a DNS label (lowercase, digits, hyphens).")
         }));
     }
 
