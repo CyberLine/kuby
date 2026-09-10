@@ -11,26 +11,42 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
-  publish:
-    name: ${{ matrix.name }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS Universal
-            platform: macos-latest
-            args: --target universal-apple-darwin
-            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
-          - name: Linux x64
-            platform: ubuntu-24.04
-            args: ""
-            rust_targets: ""
+  pick-macos-runner:
+    name: Pick macOS runner
+    runs-on: ubuntu-latest
+    outputs:
+      runner: ${{ steps.pick.outputs.runner }}
+    steps:
+      - id: pick
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runners = await github.paginate(
+              github.rest.actions.listSelfHostedRunnersForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100,
+              },
+            );
+            const online = runners.some(
+              (r) =>
+                r.status === "online" &&
+                r.labels.some((l) => l.name === "self-hosted"),
+            );
+            const runner = online ? "self-hosted" : "macos-latest";
+            core.info(
+              `Self-hosted online: ${online} → runs-on: ${runner} (${runners.length} runner(s) listed)`,
+            );
+            core.setOutput("runner", runner);
 
-    runs-on: ${{ matrix.platform }}
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
-
     steps:
       - uses: actions/checkout@v7
 
@@ -44,7 +60,6 @@ jobs:
           fi
 
       - name: Install Linux WebKit/GTK deps
-        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -65,13 +80,11 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: release-${{ matrix.platform }}-${{ matrix.rust_targets }}
+          key: release-linux-x64
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -83,17 +96,8 @@ jobs:
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater signatures (required because createUpdaterArtifacts is enabled)
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Optional Apple signing / notarization — unsigned builds still succeed if unset
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Avoid AppImage strip failures on newer glibc
           NO_STRIP: true
         with:
           tagName: ${{ github.ref_name }}
@@ -105,4 +109,113 @@ jobs:
             - **Linux**: `.AppImage`, `.deb`, `.rpm`
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
-          args: ${{ matrix.args }}
+
+  # Signed build only (no Apple notarization). Completes so rust-cache is saved
+  # even when the later notarization job times out waiting on Apple.
+  macos-build:
+    name: macOS build
+    needs: pick-macos-runner
+    runs-on: ${{ needs.pick-macos-runner.outputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-macos-${{ needs.pick-macos-runner.outputs.runner }}-universal
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync Cargo.toml version
+        run: pnpm sync-version
+
+      - name: Build & sign (skip notarization)
+        uses: tauri-apps/tauri-action@v1
+        env:
+          # Signing only — omit APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID so Tauri
+          # does not call notarytool here.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --target universal-apple-darwin
+
+  macos-notarize:
+    name: macOS notarize & upload
+    needs:
+      - pick-macos-runner
+      - macos-build
+    runs-on: ${{ needs.pick-macos-runner.outputs.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-macos-${{ needs.pick-macos-runner.outputs.runner }}-universal
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync Cargo.toml version
+        run: pnpm sync-version
+
+      - name: Notarize, staple & upload release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Kuby ${{ github.ref_name }}
+          releaseBody: |
+            Downloads for **${{ github.ref_name }}**:
+
+            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
+            - **Linux**: `.AppImage`, `.deb`, `.rpm`
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: --target universal-apple-darwin
