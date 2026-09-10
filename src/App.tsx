@@ -21,13 +21,13 @@ import { LogViewer } from "./components/LogViewer";
 import { NamespaceGraphView } from "./components/NamespaceGraphView";
 import { NamespacePicker } from "./components/NamespacePicker";
 import { OverviewView } from "./components/OverviewView";
-import { ResourceIcon } from "./components/ResourceIcon";
 import {
   isOpaqueSecret,
   ResourceDataEditor,
   resourceDataMap,
   supportsDataTab,
 } from "./components/ResourceDataEditor";
+import { ResourceIcon } from "./components/ResourceIcon";
 import { TelemetryDialog } from "./components/TelemetryDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { VirtualList } from "./components/VirtualList";
@@ -510,7 +510,9 @@ function App() {
     return tabs;
   });
 
-  function defaultDetailPanel(obj: K8sObject | null | undefined = store.selectedObject()): PanelTab {
+  function defaultDetailPanel(
+    obj: K8sObject | null | undefined = store.selectedObject(),
+  ): PanelTab {
     const kind = (obj?.kind as string) || store.selectedKind().kind;
     return supportsDataTab(obj, kind) ? "data" : "detail";
   }

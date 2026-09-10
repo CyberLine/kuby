@@ -158,9 +158,11 @@ export function ResourceDataEditor(props: Props) {
   }
 
   function removeRow(index: number) {
-    setRows(produce((list) => {
-      list.splice(index, 1);
-    }));
+    setRows(
+      produce((list) => {
+        list.splice(index, 1);
+      }),
+    );
     bump();
   }
 
