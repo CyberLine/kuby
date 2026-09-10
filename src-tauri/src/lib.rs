@@ -127,6 +127,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            if let Some(win) = app.get_webview_window("main") {
+                let version = app.package_info().version.to_string();
+                let _ = win.set_title(&format!("Kuby {version}"));
+            }
             let menu = build_app_menu(app.handle())?;
             app.set_menu(menu)?;
             app.on_menu_event(|app, event| match event.id().as_ref() {
@@ -164,6 +168,7 @@ pub fn run() {
             commands::resources::get_resource,
             commands::resources::get_resource_yaml,
             commands::resources::apply_yaml,
+            commands::resources::patch_resource_data,
             commands::resources::delete_resource,
             commands::resources::start_resource_watch,
             commands::resources::stop_resource_watch,

@@ -19,7 +19,7 @@ type Props = {
 };
 
 export function AboutDialog(props: Props) {
-  const [version, setVersion] = createSignal("0.2.0");
+  const [version, setVersion] = createSignal("…");
 
   onMount(() => {
     void getVersion()

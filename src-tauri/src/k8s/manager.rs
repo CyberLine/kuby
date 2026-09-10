@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context};
 use kube::api::{ApiResource, DynamicObject, GroupVersionKind};
@@ -15,6 +16,8 @@ use tracing::{info, warn};
 use crate::error::{KubyError, Result};
 use crate::k8s::auth::{describe_auth, AuthSummary};
 use crate::k8s::discovery::DiscoveryCache;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,6 +102,18 @@ impl ClusterManager {
     }
 
     pub async fn connect(&self, context: &str) -> Result<ClusterStatus> {
+        match tokio::time::timeout(CONNECT_TIMEOUT, self.connect_inner(context)).await {
+            Ok(result) => result,
+            Err(_) => {
+                let _ = self.disconnect(context).await;
+                Err(KubyError::Message(format!(
+                    "Connection to \"{context}\" timed out after 30s."
+                )))
+            }
+        }
+    }
+
+    async fn connect_inner(&self, context: &str) -> Result<ClusterStatus> {
         if self.inner.read().contains_key(context) {
             return self.test_connection(context).await;
         }

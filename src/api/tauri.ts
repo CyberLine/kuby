@@ -28,6 +28,8 @@ export const api = {
     invoke<Record<string, unknown>>("get_resource", { ident }),
   getResourceYaml: (ident: ResourceIdentifier) => invoke<string>("get_resource_yaml", { ident }),
   applyYaml: (context: string, yaml: string) => invoke("apply_yaml", { context, yaml }),
+  patchResourceData: (ident: ResourceIdentifier, data: Record<string, string>) =>
+    invoke<Record<string, unknown>>("patch_resource_data", { ident, data }),
   deleteResource: (ident: ResourceIdentifier) => invoke<void>("delete_resource", { ident }),
   startResourceWatch: (
     context: string,

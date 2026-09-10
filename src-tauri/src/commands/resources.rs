@@ -131,6 +131,39 @@ pub async fn apply_yaml(
     Ok(serde_json::to_value(patched)?)
 }
 
+/// Replace the `data` map on a ConfigMap or Secret via JSON Patch.
+/// `data` values must already be in API form (plain for ConfigMap, base64 for Secret).
+#[tauri::command]
+pub async fn patch_resource_data(
+    state: State<'_, AppState>,
+    ident: ResourceIdentifier,
+    data: std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value> {
+    let (api, _) = state
+        .manager
+        .resolve_api(
+            &ident.context,
+            &ident.api_version,
+            &ident.kind,
+            ident.namespace.as_deref(),
+        )
+        .await?;
+
+    let data_value = serde_json::to_value(&data)?;
+    // `add` replaces an existing `/data` value (RFC 6902), so deleted keys are gone.
+    let patch_value = json!([{ "op": "add", "path": "/data", "value": data_value }]);
+    let patch: json_patch::Patch = serde_json::from_value(patch_value)?;
+    let patched = api
+        .patch(
+            &ident.name,
+            &PatchParams::default(),
+            &Patch::Json::<()>(patch),
+        )
+        .await?;
+    let patched = crate::k8s::ClusterManager::strip_managed_fields(patched);
+    Ok(serde_json::to_value(patched)?)
+}
+
 #[tauri::command]
 pub async fn delete_resource(state: State<'_, AppState>, ident: ResourceIdentifier) -> Result<()> {
     // Cluster-scoped core types: avoid discovery/namespaced mistakes.

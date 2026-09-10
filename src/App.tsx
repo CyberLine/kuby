@@ -22,6 +22,12 @@ import { NamespaceGraphView } from "./components/NamespaceGraphView";
 import { NamespacePicker } from "./components/NamespacePicker";
 import { OverviewView } from "./components/OverviewView";
 import { ResourceIcon } from "./components/ResourceIcon";
+import {
+  isOpaqueSecret,
+  ResourceDataEditor,
+  resourceDataMap,
+  supportsDataTab,
+} from "./components/ResourceDataEditor";
 import { TelemetryDialog } from "./components/TelemetryDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { VirtualList } from "./components/VirtualList";
@@ -174,6 +180,9 @@ function App() {
   const [showAbout, setShowAbout] = createSignal(false);
   const [connectingContext, setConnectingContext] = createSignal<string | null>(null);
   const [bootError, setBootError] = createSignal<string | null>(null);
+  const [online, setOnline] = createSignal(
+    typeof navigator !== "undefined" ? navigator.onLine : true,
+  );
   const [pendingSelectName, setPendingSelectName] = createSignal<string | null>(null);
   const [checkedKeys, setCheckedKeys] = createSignal<Set<string>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = createSignal<number | null>(null);
@@ -316,6 +325,25 @@ function App() {
   });
 
   onMount(() => {
+    const syncOnline = () => setOnline(navigator.onLine);
+    const onOffline = () => {
+      setOnline(false);
+      setBootError(null);
+    };
+    const onOnline = () => {
+      setOnline(true);
+      store.clearError();
+    };
+    syncOnline();
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    onCleanup(() => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+    });
+  });
+
+  onMount(() => {
     let cancelled = false;
     const unlisteners: UnlistenFn[] = [];
     function keep(fn: UnlistenFn) {
@@ -343,6 +371,10 @@ function App() {
       await goToOverview();
       return;
     }
+    if (!online()) {
+      setBootError("Offline — connect when a network is available.");
+      return;
+    }
     setConnectingContext(name);
     setBootError(null);
     try {
@@ -357,11 +389,20 @@ function App() {
   }
 
   async function connectMany(names: string[]) {
+    if (!online()) {
+      setBootError("Offline — connect when a network is available.");
+      return;
+    }
     setBootError(null);
     const toConnect = names.filter((n) => !store.activeContexts().includes(n));
     for (const name of toConnect) {
+      if (!online()) {
+        setBootError("Offline — connect when a network is available.");
+        break;
+      }
       setConnectingContext(name);
       await store.connect(name);
+      if (store.error()) break;
     }
     setConnectingContext(null);
     if (store.activeContexts().length) {
@@ -456,19 +497,28 @@ function App() {
   const detailTabs = createMemo((): PanelTab[] => {
     const kind = store.selectedKind().kind;
     const tabs: PanelTab[] = ["detail", "yaml", "diff"];
+    if (supportsDataTab(store.selectedObject(), kind)) {
+      tabs.splice(1, 0, "data");
+    }
     if (kind === "Pod") {
-      tabs.splice(2, 0, "logs", "exec");
+      tabs.splice(tabs.indexOf("yaml") + 1, 0, "logs", "exec");
       if (selectedPodPorts().length > 0) {
-        tabs.splice(4, 0, "portforward");
+        const execIdx = tabs.indexOf("exec");
+        tabs.splice(execIdx + 1, 0, "portforward");
       }
     }
     return tabs;
   });
 
+  function defaultDetailPanel(obj: K8sObject | null | undefined = store.selectedObject()): PanelTab {
+    const kind = (obj?.kind as string) || store.selectedKind().kind;
+    return supportsDataTab(obj, kind) ? "data" : "detail";
+  }
+
   createEffect(() => {
     const tabs = detailTabs();
     if (!tabs.includes(panel())) {
-      setPanel("detail");
+      setPanel(tabs.includes("data") ? "data" : "detail");
     }
   });
 
@@ -486,7 +536,7 @@ function App() {
     const match = objects().find((o) => objectName(o) === pending);
     if (match) {
       store.setSelectedObjectKey(objectKey(match));
-      setPanel("detail");
+      setPanel(defaultDetailPanel(match));
       setPendingSelectName(null);
     }
   });
@@ -630,6 +680,24 @@ function App() {
       await reloadCurrentList();
     } catch (e) {
       showStatus(String(e), true);
+    }
+  }
+
+  async function reloadSelectedYaml() {
+    const obj = store.selectedObject();
+    if (!obj || store.isSyntheticNamespace(obj)) return;
+    try {
+      const y = await api.getResourceYaml({
+        context: store.selectedContext(),
+        apiVersion: (obj.apiVersion as string) || store.selectedKind().apiVersion,
+        kind: (obj.kind as string) || store.selectedKind().kind,
+        namespace: objectNamespace(obj) || null,
+        name: objectName(obj),
+      });
+      setYaml(y);
+      setDiffBase(y);
+    } catch (e) {
+      console.error(e);
     }
   }
 
@@ -780,13 +848,13 @@ function App() {
       toggleChecked(key);
       setLastClickedIndex(index);
       store.setSelectedObjectKey(key);
-      setPanel("detail");
+      setPanel(defaultDetailPanel(obj));
       return;
     }
     setChecked(new Set([key]));
     setLastClickedIndex(index);
     store.setSelectedObjectKey(key);
-    setPanel("detail");
+    setPanel(defaultDetailPanel(obj));
   }
 
   function onRowContextMenu(obj: K8sObject, index: number, e: MouseEvent) {
@@ -1282,10 +1350,15 @@ function App() {
             activeContexts={store.activeContexts()}
             loading={store.loading() || !!connectingContext()}
             error={bootError() || store.error()}
+            offline={!online()}
             connecting={connectingContext()}
             onConnect={connectContext}
             onConnectMany={connectMany}
             onBack={() => setShowWelcome(false)}
+            onDismissError={() => {
+              setBootError(null);
+              store.clearError();
+            }}
             onRefresh={async () => {
               try {
                 setBootError(null);
@@ -1996,17 +2069,46 @@ function App() {
                                             </table>
                                           </Show>
                                         </dd>
-                                        <dt>Status</dt>
-                                        <dd class="kv-json">
-                                          <CodeEditor
-                                            language="json"
-                                            readOnly
-                                            compact
-                                            value={JSON.stringify(obj().status || {}, null, 2)}
-                                          />
-                                        </dd>
+                                        <Show
+                                          when={
+                                            obj().status != null &&
+                                            typeof obj().status === "object" &&
+                                            Object.keys(obj().status as object).length > 0
+                                          }
+                                        >
+                                          <dt>Status</dt>
+                                          <dd class="kv-json">
+                                            <CodeEditor
+                                              language="json"
+                                              readOnly
+                                              compact
+                                              value={JSON.stringify(obj().status, null, 2)}
+                                            />
+                                          </dd>
+                                        </Show>
                                       </dl>
                                     </div>
+                                  </Show>
+
+                                  <Show when={panel() === "data"}>
+                                    <ResourceDataEditor
+                                      context={store.selectedContext()}
+                                      apiVersion={
+                                        (obj().apiVersion as string) ||
+                                        store.selectedKind().apiVersion
+                                      }
+                                      kind={(obj().kind as string) || store.selectedKind().kind}
+                                      namespace={objectNamespace(obj()) || null}
+                                      name={objectName(obj())}
+                                      objectId={objectKey(obj())}
+                                      data={resourceDataMap(obj())}
+                                      isSecret={isOpaqueSecret(obj(), store.selectedKind().kind)}
+                                      onStatus={showStatus}
+                                      onApplied={async () => {
+                                        await reloadCurrentList();
+                                        await reloadSelectedYaml();
+                                      }}
+                                    />
                                   </Show>
 
                                   <Show when={panel() === "yaml"}>

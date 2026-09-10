@@ -199,4 +199,4 @@ export interface PortForwardInfo {
   remotePort: number;
 }
 
-export type PanelTab = "detail" | "yaml" | "logs" | "exec" | "diff" | "portforward";
+export type PanelTab = "detail" | "data" | "yaml" | "logs" | "exec" | "diff" | "portforward";

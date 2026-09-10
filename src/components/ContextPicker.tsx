@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import logo from "../assets/logo.png";
 import type { ContextInfo } from "../types";
 import { ThemeToggle } from "./ThemeToggle";
@@ -8,16 +8,23 @@ type Props = {
   activeContexts?: string[];
   loading: boolean;
   error: string | null;
+  offline?: boolean;
   connecting?: string | null;
   onConnect: (name: string) => void | Promise<void>;
   onConnectMany: (names: string[]) => void | Promise<void>;
   onRefresh: () => void | Promise<void>;
+  onDismissError?: () => void;
   onBack?: () => void;
 };
 
 export function ContextPicker(props: Props) {
   const [query, setQuery] = createSignal("");
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  const [offlineDismissed, setOfflineDismissed] = createSignal(false);
+
+  createEffect(() => {
+    if (!props.offline) setOfflineDismissed(false);
+  });
 
   const filtered = createMemo(() => {
     const q = query().trim().toLowerCase();
@@ -80,8 +87,31 @@ export function ContextPicker(props: Props) {
           </div>
         </header>
 
+        <Show when={props.offline && !offlineDismissed()}>
+          <div class="banner warn">
+            <span>Offline — no network connection.</span>
+            <button
+              class="banner-close"
+              type="button"
+              onClick={() => setOfflineDismissed(true)}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
+        </Show>
         <Show when={props.error}>
-          <div class="banner err">{props.error}</div>
+          <div class="banner err">
+            <span>{props.error}</span>
+            <button
+              class="banner-close"
+              type="button"
+              onClick={() => props.onDismissError?.()}
+              title="Dismiss"
+            >
+              ×
+            </button>
+          </div>
         </Show>
 
         <Show
@@ -92,7 +122,7 @@ export function ContextPicker(props: Props) {
               <p class="muted">
                 Check <code>~/.kube/config</code> or the <code>KUBECONFIG</code> env var.
               </p>
-              <button class="btn" onClick={() => props.onRefresh()}>
+              <button class="btn" onClick={() => props.onRefresh()} disabled={props.offline}>
                 Retry
               </button>
             </div>
@@ -103,7 +133,7 @@ export function ContextPicker(props: Props) {
               {filtered().length} of {props.contexts.length} contexts
             </span>
             <div class="welcome-toolbar-actions">
-              <button class="btn ghost" onClick={selectAllVisible}>
+              <button class="btn ghost" onClick={selectAllVisible} disabled={props.offline}>
                 Select visible
               </button>
               <button class="btn ghost" onClick={clearSelection} disabled={!selected().size}>
@@ -111,7 +141,7 @@ export function ContextPicker(props: Props) {
               </button>
               <button
                 class="btn"
-                disabled={!selected().size || props.loading}
+                disabled={!selected().size || props.loading || props.offline}
                 onClick={() => props.onConnectMany([...selected()])}
               >
                 Connect selected ({selected().size})
@@ -119,21 +149,23 @@ export function ContextPicker(props: Props) {
             </div>
           </div>
 
-          <div class="context-grid">
+          <div class={`context-grid ${props.offline ? "is-offline" : ""}`}>
             <For each={filtered()}>
               {(ctx) => {
                 const isConnecting = () => props.connecting === ctx.name;
                 const isChecked = () => selected().has(ctx.name);
                 const isActive = () => (props.activeContexts || []).includes(ctx.name);
+                const canOpen = () => isActive() && !props.offline;
+                const canConnect = () => !props.loading && !props.offline;
                 return (
                   <article
-                    class={`context-card ${isChecked() ? "selected" : ""} ${ctx.current ? "current" : ""} ${isActive() ? "active-card" : ""}`}
+                    class={`context-card ${isChecked() ? "selected" : ""} ${ctx.current ? "current" : ""} ${isActive() ? "active-card" : ""} ${props.offline ? "offline" : ""}`}
                   >
                     <label class="context-check">
                       <input
                         type="checkbox"
                         checked={isChecked()}
-                        disabled={isActive()}
+                        disabled={isActive() || props.offline}
                         onChange={() => toggle(ctx.name)}
                       />
                       <div class="context-card-body">
@@ -168,7 +200,7 @@ export function ContextPicker(props: Props) {
                     </label>
                     <button
                       class="btn"
-                      disabled={props.loading}
+                      disabled={isActive() ? !canOpen() : !canConnect()}
                       onClick={() => props.onConnect(ctx.name)}
                     >
                       {isConnecting() ? "Connecting…" : isActive() ? "Open" : "Connect"}

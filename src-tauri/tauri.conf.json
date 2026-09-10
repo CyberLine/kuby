@@ -1,12 +1,12 @@
 {
 	"$schema": "https://schema.tauri.app/config/2",
 	"productName": "Kuby",
-	"version": "0.2.0",
+	"version": "../package.json",
 	"identifier": "com.alexanderover.kuby",
 	"build": {
 		"beforeDevCommand": "pnpm dev",
 		"devUrl": "http://localhost:1420",
-		"beforeBuildCommand": "pnpm build",
+		"beforeBuildCommand": "pnpm sync-version && pnpm build",
 		"frontendDist": "../dist"
 	},
 	"app": {
@@ -25,6 +25,7 @@
 	},
 	"bundle": {
 		"active": true,
+		"createUpdaterArtifacts": true,
 		"copyright": "© 2026 Alexander Over",
 		"publisher": "Alexander Over",
 		"homepage": "https://github.com/CyberLine/kuby",

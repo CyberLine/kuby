@@ -29,10 +29,28 @@ import {
 import { countedPodNodeName, nodeStatusText } from "../utils/nodeStatus";
 import { matchesLabelSelector, matchesOwnerFilter } from "../utils/relations";
 
+const CONNECT_TIMEOUT_MS = 30_000;
+
 export type ResourceBucket = {
   byUid: Record<string, K8sObject>;
   order: string[];
 };
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 
 function formatWatchError(payload: WatchErrorPayload): string {
   const err = payload.error || "unknown error";
@@ -339,8 +357,15 @@ function createClusterStore() {
     setLoading(true);
     setError(null);
     try {
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        throw new Error("Offline — no network connection.");
+      }
       await ensureWatchListener();
-      const status = await api.connectCluster(context);
+      const status = await withTimeout(
+        api.connectCluster(context),
+        CONNECT_TIMEOUT_MS,
+        `Connection to "${context}" timed out after 30s.`,
+      );
       setStatuses(context, status);
       if (!status.connected && status.error) {
         setError(status.error);
@@ -365,7 +390,21 @@ function createClusterStore() {
       const apis = await api.listApiResources(context, true);
       setApiResources(context, apis);
     } catch (e) {
-      setError(String(e));
+      const message = String(e);
+      const timedOut = /timed out after 30s/i.test(message);
+      if (timedOut) {
+        try {
+          await api.disconnectCluster(context);
+        } catch {
+          /* best-effort cleanup */
+        }
+        try {
+          setActiveContexts(await api.listActiveClusters());
+        } catch {
+          setActiveContexts((prev) => prev.filter((c) => c !== context));
+        }
+      }
+      setError(message);
     } finally {
       setLoading(false);
     }
