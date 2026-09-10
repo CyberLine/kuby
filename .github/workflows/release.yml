@@ -139,6 +139,10 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # tauri-action defaults this to true, which forces Finder AppleScript
+          # even when CI=true. That fails on many self-hosted Macs → false so
+          # the bundler passes --skip-jenkins and builds a plain DMG.
+          TAURI_BUNDLER_DMG_IGNORE_CI: "false"
         with:
           args: --target universal-apple-darwin
 
@@ -193,6 +197,7 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_BUNDLER_DMG_IGNORE_CI: "false"
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Kuby ${{ github.ref_name }}
