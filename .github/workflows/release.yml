@@ -11,38 +11,11 @@ concurrency:
 
 permissions:
   contents: write
-  actions: read
+
+# macOS: vars.MACOS_RUNNER = self-hosted | macos-latest (default: self-hosted).
+# GITHUB_TOKEN cannot list runners (403) — no automatic online-detection.
 
 jobs:
-  pick-macos-runner:
-    name: Pick macOS runner
-    runs-on: ubuntu-latest
-    outputs:
-      runner: ${{ steps.pick.outputs.runner }}
-    steps:
-      - id: pick
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const runners = await github.paginate(
-              github.rest.actions.listSelfHostedRunnersForRepo,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                per_page: 100,
-              },
-            );
-            const online = runners.some(
-              (r) =>
-                r.status === "online" &&
-                r.labels.some((l) => l.name === "self-hosted"),
-            );
-            const runner = online ? "self-hosted" : "macos-latest";
-            core.info(
-              `Self-hosted online: ${online} → runs-on: ${runner} (${runners.length} runner(s) listed)`,
-            );
-            core.setOutput("runner", runner);
-
   linux:
     name: Linux x64
     runs-on: ubuntu-24.04
@@ -114,8 +87,7 @@ jobs:
   # even when the later notarization job times out waiting on Apple.
   macos-build:
     name: macOS build
-    needs: pick-macos-runner
-    runs-on: ${{ needs.pick-macos-runner.outputs.runner }}
+    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -143,7 +115,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: release-macos-${{ needs.pick-macos-runner.outputs.runner }}-universal
+          key: release-macos-${{ vars.MACOS_RUNNER || 'self-hosted' }}-universal
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -166,10 +138,8 @@ jobs:
 
   macos-notarize:
     name: macOS notarize & upload
-    needs:
-      - pick-macos-runner
-      - macos-build
-    runs-on: ${{ needs.pick-macos-runner.outputs.runner }}
+    needs: macos-build
+    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -188,7 +158,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: release-macos-${{ needs.pick-macos-runner.outputs.runner }}-universal
+          key: release-macos-${{ vars.MACOS_RUNNER || 'self-hosted' }}-universal
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
