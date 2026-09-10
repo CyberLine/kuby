@@ -115,6 +115,11 @@ export function kindHasPodsColumn(kind: string): boolean {
   return kind === "Node";
 }
 
+/** Node binding (spec.nodeName) is only populated for pods. */
+export function kindHasNodeColumn(kind: string): boolean {
+  return kind === "Pod";
+}
+
 /** False for create-only APIs (TokenReview, SubjectAccessReview, …). */
 export function resourceIsWatchable(r: { watchable?: boolean; verbs?: string[] }): boolean {
   if (typeof r.watchable === "boolean") return r.watchable;

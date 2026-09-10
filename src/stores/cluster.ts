@@ -71,6 +71,13 @@ function formatWatchError(payload: WatchErrorPayload): string {
   return `Watch ${payload.kind}${where} failed: ${err}`;
 }
 
+/** Stream drops / LB idle timeouts — watcher reconnects; do not banner these. */
+function isTransientWatchError(err: string): boolean {
+  return /error reading a body from connection|connection reset|broken pipe|connection closed|unexpected eof|timed out|os error 54|os error 32|error decoding response body/i.test(
+    err,
+  );
+}
+
 /** Match overview segment labels to live objects (mirrors Rust overview cards). */
 function matchesStatusFilter(obj: K8sObject, kind: string, label: string): boolean {
   const status = (obj.status || {}) as Record<string, unknown>;
@@ -263,6 +270,7 @@ function createClusterStore() {
       watchErrorUnlisten = await listen<WatchErrorPayload>("k8s://watch-error", (ev) => {
         const payload = ev.payload;
         if (visualizeNamespace()) return;
+        if (isTransientWatchError(payload.error || "")) return;
         const ctx = selectedContext();
         const sel = selectedKind();
         if (
@@ -462,7 +470,23 @@ function createClusterStore() {
     setSelectedNamespaces(context, next);
   }
 
-  function addNamespace(context: string, raw: string): boolean {
+  function addNamespaceToLocalList(context: string, name: string) {
+    const listed = namespaces[context] || [];
+    if (!listed.includes(name)) {
+      const access = namespaceAccess[context];
+      if (access?.restricted) {
+        const extras = uniqueSorted([...loadExtraNamespaces(context), name]);
+        saveExtraNamespaces(context, extras);
+        setExtraNamespaces(context, extras);
+      }
+      setNamespaces(context, uniqueSorted([...listed, name]));
+    }
+    const selected = (selectedNamespaces[context] || []).filter((n) => n !== "*");
+    selectNamespaces(context, selected.includes(name) ? selected : [...selected, name]);
+  }
+
+  /** Create a Namespace resource on the cluster, then select it in the sidebar. */
+  async function createNamespace(context: string, raw: string): Promise<boolean> {
     const name = raw.trim();
     if (!isValidNamespaceName(name)) {
       setError(
@@ -472,16 +496,15 @@ function createClusterStore() {
       );
       return false;
     }
-    const listed = namespaces[context] || [];
-    if (!listed.includes(name)) {
-      const extras = uniqueSorted([...loadExtraNamespaces(context), name]);
-      saveExtraNamespaces(context, extras);
-      setExtraNamespaces(context, extras);
-      setNamespaces(context, uniqueSorted([...listed, name]));
+    try {
+      await api.createNamespace(context, name);
+      await refreshNamespaces(context);
+      addNamespaceToLocalList(context, name);
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
     }
-    const selected = (selectedNamespaces[context] || []).filter((n) => n !== "*");
-    selectNamespaces(context, selected.includes(name) ? selected : [...selected, name]);
-    return true;
   }
 
   function removeExtraNamespaces(context: string, names: string[]) {
@@ -989,7 +1012,7 @@ function createClusterStore() {
     setSelectedNamespaces: selectNamespaces,
     namespaceAccess,
     extraNamespaces,
-    addNamespace,
+    createNamespace,
     removeExtraNamespaces,
     isExtraNamespace,
     isSyntheticNamespace,

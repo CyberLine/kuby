@@ -24,6 +24,8 @@ export const api = {
   listApiResources: (context: string, refresh = false) =>
     invoke<DiscoveredResource[]>("list_api_resources", { context, refresh }),
   listNamespaces: (context: string) => invoke<NamespaceListResult>("list_namespaces", { context }),
+  createNamespace: (context: string, name: string) =>
+    invoke<string>("create_namespace", { context, name }),
   getResource: (ident: ResourceIdentifier) =>
     invoke<Record<string, unknown>>("get_resource", { ident }),
   getResourceYaml: (ident: ResourceIdentifier) => invoke<string>("get_resource_yaml", { ident }),

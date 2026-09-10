@@ -131,17 +131,19 @@ pub async fn start_watch(
                     let unrecoverable = is_unrecoverable_watch_error(&err);
                     let message = watch_error_message(&err);
                     warn!(error = %message, unrecoverable, "watch error");
-                    let _ = app2.emit(
-                        "k8s://watch-error",
-                        WatchErrorPayload {
-                            context: context2.clone(),
-                            api_version: api_version2.clone(),
-                            kind: kind2.clone(),
-                            namespace: namespace2.clone(),
-                            error: message,
-                        },
-                    );
+                    // Transient stream drops (idle timeouts, LB resets, etc.) are normal;
+                    // kube-runtime reconnects with backoff. Only surface hard failures in the UI.
                     if unrecoverable {
+                        let _ = app2.emit(
+                            "k8s://watch-error",
+                            WatchErrorPayload {
+                                context: context2.clone(),
+                                api_version: api_version2.clone(),
+                                kind: kind2.clone(),
+                                namespace: namespace2.clone(),
+                                error: message,
+                            },
+                        );
                         break;
                     }
                 }

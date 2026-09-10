@@ -9,6 +9,7 @@ import {
   Show,
   untrack,
 } from "solid-js";
+import { confirmAction } from "./api/confirm";
 import { api } from "./api/tauri";
 import { checkForUpdates } from "./api/updater";
 import logo from "./assets/logo.png";
@@ -44,6 +45,7 @@ import {
   CURATED_NAV,
   kindHasMetricsColumn,
   kindHasNamespaceColumn,
+  kindHasNodeColumn,
   kindHasPodsColumn,
   objectKey,
   objectName,
@@ -60,6 +62,19 @@ import type {
   PodMetrics,
   PortForwardInfo,
 } from "./types";
+import {
+  availableColumns,
+  buildGridTemplate,
+  type ColumnPrefs,
+  type ListColumnId,
+  LIST_COLUMN_META,
+  persistColumnPrefs,
+  podNodeName,
+  readColumnPrefs,
+  setColumnWidth,
+  toggleColumnHidden,
+  visibleColumns,
+} from "./utils/listColumns";
 import {
   formatNodePodUsage,
   isNodeUnschedulable,
@@ -191,16 +206,19 @@ function App() {
     y: number;
     keys: string[];
   } | null>(null);
-  const [sortKey, setSortKey] = createSignal<
-    "name" | "namespace" | "status" | "metrics" | "age" | "version" | "pods"
-  >("name");
+  const [sortKey, setSortKey] = createSignal<ListColumnId>("name");
   const [sortDir, setSortDir] = createSignal<"asc" | "desc">("asc");
   const [detailWidth, setDetailWidth] = createSignal<number | null>(readDetailWidth());
+  const [columnPrefs, setColumnPrefs] = createSignal<ColumnPrefs>(readColumnPrefs());
+  const [columnsMenuOpen, setColumnsMenuOpen] = createSignal(false);
   let statusTimer: number | undefined;
   let contentEl!: HTMLDivElement;
   let detailPaneEl: HTMLElement | undefined;
   let resizeStartX = 0;
   let resizeStartWidth = 0;
+  let listColResizeId: ListColumnId | null = null;
+  let listColResizeStartX = 0;
+  let listColResizeStartW = 0;
 
   function showStatus(msg: string, isError = false, autoHideMs = 4000) {
     setStatusIsError(isError);
@@ -722,12 +740,12 @@ function App() {
     const where = ns ? ` in namespace "${ns}"` : "";
 
     if (action === "restart") {
-      const ok = window.confirm(
+      const ok = await confirmAction(
         `Restart ${kind} "${name}"${where}?\n\nThis triggers a rolling restart of its pods.`,
       );
       if (!ok) return;
     } else if (action === "scale" && scaleReplicas() === 0) {
-      const ok = window.confirm(
+      const ok = await confirmAction(
         `Scale ${kind} "${name}"${where} to 0 replicas?\n\nAll pods of this workload will be terminated.`,
       );
       if (!ok) return;
@@ -779,7 +797,7 @@ function App() {
       return;
     }
 
-    if (!window.confirm(confirmMsg)) return;
+    if (!(await confirmAction(confirmMsg))) return;
 
     try {
       const result = await api.rollbackDeployment({
@@ -891,7 +909,7 @@ function App() {
       .join("\n");
     const more = objs.length > 8 ? `\n… and ${objs.length - 8} more` : "";
 
-    const ok = window.confirm(
+    const ok = await confirmAction(
       `Delete ${objs.length} ${kind}${objs.length === 1 ? "" : "s"}?\n\n${sample}${more}\n\nThis cannot be undone.` +
         (protectedNs ? "\n\nWarning: selection includes a system namespace." : ""),
     );
@@ -979,14 +997,14 @@ function App() {
     const more = targets.length > 8 ? `\n… and ${targets.length - 8} more` : "";
 
     if (action === "drain") {
-      const ok = window.confirm(
+      const ok = await confirmAction(
         `Drain ${targets.length} node${targets.length === 1 ? "" : "s"}?\n\n${sample}${more}\n\n` +
           "Nodes will be cordoned and pods evicted (DaemonSet and mirror pods are skipped). " +
           "Pods using emptyDir will lose local data. This may take a while if PDBs block eviction.",
       );
       if (!ok) return;
     } else if (action === "cordon") {
-      const ok = window.confirm(
+      const ok = await confirmAction(
         `Cordon ${targets.length} node${targets.length === 1 ? "" : "s"}?\n\n${sample}${more}\n\n` +
           "No new pods will be scheduled on these nodes.",
       );
@@ -1163,7 +1181,7 @@ function App() {
     return Number.isFinite(n) ? n : 0;
   }
 
-  function toggleSort(key: typeof sortKey extends () => infer K ? K : never) {
+  function toggleSort(key: ListColumnId) {
     if (sortKey() === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
@@ -1172,7 +1190,7 @@ function App() {
     }
   }
 
-  function sortIndicator(key: typeof sortKey extends () => infer K ? K : never) {
+  function sortIndicator(key: ListColumnId) {
     if (sortKey() !== key) return "";
     return sortDir() === "asc" ? " ▲" : " ▼";
   }
@@ -1192,6 +1210,12 @@ function App() {
           break;
         case "namespace":
           cmp = objectNamespace(a).localeCompare(objectNamespace(b), undefined, {
+            sensitivity: "base",
+            numeric: true,
+          });
+          break;
+        case "node":
+          cmp = podNodeName(a).localeCompare(podNodeName(b), undefined, {
             sensitivity: "base",
             numeric: true,
           });
@@ -1263,26 +1287,96 @@ function App() {
     return "No resources in the selected namespaces.";
   }
 
-  const listColumns = createMemo(() => {
+  const listColumnCaps = createMemo(() => {
     const kind = store.selectedKind();
     const discovered = (store.apiResources[store.selectedContext()] || []).find(
       (r) => r.kind === kind.kind && r.apiVersion === kind.apiVersion,
     );
-    const showNamespace = discovered ? discovered.namespaced : kindHasNamespaceColumn(kind.kind);
-    const showMetrics = kindHasMetricsColumn(kind.kind);
-    const showVersion = kind.kind === "Node";
-    const showPods = kindHasPodsColumn(kind.kind);
-    const colsClass = showVersion
-      ? "cols-node"
-      : !showNamespace && !showMetrics
-        ? "cols-no-ns-metrics"
-        : !showNamespace
-          ? "cols-no-ns"
-          : !showMetrics
-            ? "cols-no-metrics"
-            : "";
-    return { showNamespace, showMetrics, showVersion, showPods, colsClass };
+    return {
+      namespace: discovered ? discovered.namespaced : kindHasNamespaceColumn(kind.kind),
+      node: kindHasNodeColumn(kind.kind),
+      version: kind.kind === "Node",
+      pods: kindHasPodsColumn(kind.kind),
+      metrics: kindHasMetricsColumn(kind.kind),
+    };
   });
+
+  const listAvailableColumns = createMemo(() => availableColumns(listColumnCaps()));
+
+  const listVisibleColumns = createMemo(() =>
+    visibleColumns(columnPrefs(), store.selectedKind().kind, listAvailableColumns()),
+  );
+
+  const listGridTemplate = createMemo(() =>
+    buildGridTemplate(listVisibleColumns(), columnPrefs().widths),
+  );
+
+  function colVisible(id: ListColumnId) {
+    return listVisibleColumns().includes(id);
+  }
+
+  function updateColumnPrefs(next: ColumnPrefs, persist = true) {
+    setColumnPrefs(next);
+    if (persist) persistColumnPrefs(next);
+  }
+
+  function onToggleListColumn(id: ListColumnId) {
+    updateColumnPrefs(
+      toggleColumnHidden(
+        columnPrefs(),
+        store.selectedKind().kind,
+        listAvailableColumns(),
+        id,
+      ),
+    );
+  }
+
+  function endListColResize() {
+    if (listColResizeId != null) {
+      persistColumnPrefs(columnPrefs());
+    }
+    document.body.classList.remove("is-list-col-resizing");
+    listColResizeId = null;
+  }
+
+  function onListColResizePointerDown(id: ListColumnId, e: PointerEvent) {
+    if (e.button !== 0) return;
+    const handle = e.currentTarget as HTMLElement;
+    const cell = handle.parentElement;
+    if (!cell) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handle.setPointerCapture(e.pointerId);
+    listColResizeId = id;
+    listColResizeStartX = e.clientX;
+    listColResizeStartW = cell.getBoundingClientRect().width;
+    document.body.classList.add("is-list-col-resizing");
+  }
+
+  function onListColResizePointerMove(e: PointerEvent) {
+    if (!listColResizeId) return;
+    if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
+    const dx = e.clientX - listColResizeStartX;
+    updateColumnPrefs(
+      setColumnWidth(columnPrefs(), listColResizeId, listColResizeStartW + dx),
+      false,
+    );
+  }
+
+  function onListColResizePointerUp(e: PointerEvent) {
+    if ((e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    }
+    endListColResize();
+  }
+
+  function onListColResizeDblClick(id: ListColumnId, e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const widths = { ...columnPrefs().widths };
+    delete widths[id];
+    updateColumnPrefs({ ...columnPrefs(), widths });
+  }
 
   createEffect(() => {
     const kind = store.selectedKind().kind;
@@ -1291,16 +1385,21 @@ function App() {
     setAggMode(false);
     clearChecked();
     setCtxMenu(null);
+    setColumnsMenuOpen(false);
   });
 
   createEffect(() => {
     store.selectedContext();
     clearChecked();
     setCtxMenu(null);
+    setColumnsMenuOpen(false);
   });
 
   onMount(() => {
-    const close = () => setCtxMenu(null);
+    const close = () => {
+      setCtxMenu(null);
+      setColumnsMenuOpen(false);
+    };
     const onWinResize = () => {
       const w = detailWidth();
       if (w == null || !contentEl) return;
@@ -1321,6 +1420,10 @@ function App() {
           target.tagName === "SELECT" ||
           target.isContentEditable)
       ) {
+        return;
+      }
+      if (columnsMenuOpen()) {
+        setColumnsMenuOpen(false);
         return;
       }
       if (ctxMenu()) {
@@ -1587,11 +1690,49 @@ function App() {
                     value={store.searchQuery()}
                     onInput={(e) => store.setSearchQuery(e.currentTarget.value)}
                   />
-                  <Show when={listColumns().showMetrics}>
+                  <Show when={listColumnCaps().metrics}>
                     <button class="btn" onClick={() => loadMetrics(true)}>
                       Metrics
                     </button>
                   </Show>
+                  <div class="columns-menu-wrap" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      class={`btn ${columnsMenuOpen() ? "active" : ""}`}
+                      onClick={() => setColumnsMenuOpen((v) => !v)}
+                      title="Show or hide columns"
+                    >
+                      Columns
+                    </button>
+                    <Show when={columnsMenuOpen()}>
+                      <div class="columns-menu" role="menu">
+                        <div class="ctx-menu-label">Columns</div>
+                        <For each={listAvailableColumns()}>
+                          {(id) => {
+                            const meta = LIST_COLUMN_META[id];
+                            return (
+                              <label
+                                class={`columns-menu-item ${meta.hideable ? "" : "disabled"}`}
+                                title={
+                                  meta.hideable
+                                    ? undefined
+                                    : "This column cannot be hidden"
+                                }
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={colVisible(id)}
+                                  disabled={!meta.hideable}
+                                  onChange={() => onToggleListColumn(id)}
+                                />
+                                <span>{meta.label}</span>
+                              </label>
+                            );
+                          }}
+                        </For>
+                      </div>
+                    </Show>
+                  </div>
                   <Show when={store.selectedKind().kind === "Pod"}>
                     <button
                       class={`btn ${aggMode() ? "active" : ""}`}
@@ -1685,7 +1826,10 @@ function App() {
                               itemHeight={36}
                               class="resource-list"
                               header={
-                                <div class={`row head ${listColumns().colsClass}`}>
+                                <div
+                                  class="row head"
+                                  style={{ "grid-template-columns": listGridTemplate() }}
+                                >
                                   <label class="row-check" title="Select all">
                                     <input
                                       type="checkbox"
@@ -1706,76 +1850,48 @@ function App() {
                                       }}
                                     />
                                   </label>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "name" ? "active" : ""}`}
-                                    onClick={() => toggleSort("name")}
-                                  >
-                                    Name{sortIndicator("name")}
-                                  </button>
-                                  <Show when={listColumns().showNamespace}>
-                                    <button
-                                      type="button"
-                                      class={`sort-btn ${sortKey() === "namespace" ? "active" : ""}`}
-                                      onClick={() => toggleSort("namespace")}
-                                    >
-                                      Namespace{sortIndicator("namespace")}
-                                    </button>
-                                  </Show>
-                                  <Show when={listColumns().showVersion}>
-                                    <button
-                                      type="button"
-                                      class={`sort-btn ${sortKey() === "version" ? "active" : ""}`}
-                                      onClick={() => toggleSort("version")}
-                                    >
-                                      Version{sortIndicator("version")}
-                                    </button>
-                                  </Show>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "status" ? "active" : ""}`}
-                                    onClick={() => toggleSort("status")}
-                                  >
-                                    Status{sortIndicator("status")}
-                                  </button>
-                                  <Show when={listColumns().showPods}>
-                                    <button
-                                      type="button"
-                                      class={`sort-btn ${sortKey() === "pods" ? "active" : ""}`}
-                                      onClick={() => toggleSort("pods")}
-                                    >
-                                      Pods{sortIndicator("pods")}
-                                    </button>
-                                  </Show>
-                                  <Show when={listColumns().showMetrics}>
-                                    <button
-                                      type="button"
-                                      class={`sort-btn ${sortKey() === "metrics" ? "active" : ""}`}
-                                      onClick={() => toggleSort("metrics")}
-                                    >
-                                      CPU / Mem{sortIndicator("metrics")}
-                                    </button>
-                                  </Show>
-                                  <button
-                                    type="button"
-                                    class={`sort-btn ${sortKey() === "age" ? "active" : ""}`}
-                                    onClick={() => toggleSort("age")}
-                                  >
-                                    Age{sortIndicator("age")}
-                                  </button>
+                                  <For each={listVisibleColumns()}>
+                                    {(id) => (
+                                      <div class="col-head">
+                                        <button
+                                          type="button"
+                                          class={`sort-btn ${sortKey() === id ? "active" : ""}`}
+                                          onClick={() => toggleSort(id)}
+                                        >
+                                          {LIST_COLUMN_META[id].label}
+                                          {sortIndicator(id)}
+                                        </button>
+                                        <div
+                                          class="col-resize"
+                                          role="separator"
+                                          aria-orientation="vertical"
+                                          aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
+                                          title="Drag to resize · double-click to reset"
+                                          onPointerDown={(e) => onListColResizePointerDown(id, e)}
+                                          onPointerMove={onListColResizePointerMove}
+                                          onPointerUp={onListColResizePointerUp}
+                                          onPointerCancel={endListColResize}
+                                          onLostPointerCapture={endListColResize}
+                                          onDblClick={(e) => onListColResizeDblClick(id, e)}
+                                        />
+                                      </div>
+                                    )}
+                                  </For>
                                 </div>
                               }
                               renderItem={(obj, index) => {
                                 const key = objectKey(obj);
                                 const name = objectName(obj);
                                 const ns = objectNamespace(obj) || "—";
+                                const node = podNodeName(obj) || "—";
                                 const labels = statusLabelsFor(obj);
                                 const phaseTitle = labels.map((l) => l.text).join(", ");
                                 return (
                                   <div
-                                    class={`row ${listColumns().colsClass} ${store.selectedObjectKey() === key ? "selected" : ""} ${
+                                    class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
                                       checkedKeys().has(key) ? "checked" : ""
                                     }`}
+                                    style={{ "grid-template-columns": listGridTemplate() }}
                                     onClick={(e) => onRowClick(obj, index, e)}
                                     onContextMenu={(e) => onRowContextMenu(obj, index, e)}
                                     role="button"
@@ -1795,26 +1911,33 @@ function App() {
                                         }}
                                       />
                                     </label>
-                                    <span class="mono name-with-action" title={name}>
-                                      <span class="name-text">{name}</span>
-                                      <Show when={store.selectedKind().kind === "Namespace"}>
-                                        <button
-                                          type="button"
-                                          class="btn ghost row-visualize"
-                                          title={`Visualize ${name}`}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            void openVisualize(name);
-                                          }}
-                                        >
-                                          Visualize
-                                        </button>
-                                      </Show>
-                                    </span>
-                                    <Show when={listColumns().showNamespace}>
+                                    <Show when={colVisible("name")}>
+                                      <span class="mono name-with-action" title={name}>
+                                        <span class="name-text">{name}</span>
+                                        <Show when={store.selectedKind().kind === "Namespace"}>
+                                          <button
+                                            type="button"
+                                            class="btn ghost row-visualize"
+                                            title={`Visualize ${name}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              void openVisualize(name);
+                                            }}
+                                          >
+                                            Visualize
+                                          </button>
+                                        </Show>
+                                      </span>
+                                    </Show>
+                                    <Show when={colVisible("namespace")}>
                                       <span title={ns}>{ns}</span>
                                     </Show>
-                                    <Show when={listColumns().showVersion}>
+                                    <Show when={colVisible("node")}>
+                                      <span class="mono" title={node}>
+                                        {node}
+                                      </span>
+                                    </Show>
+                                    <Show when={colVisible("version")}>
                                       <span class="status-labels">
                                         <Show
                                           when={nodeKubeletVersion(obj)}
@@ -1824,16 +1947,18 @@ function App() {
                                         </Show>
                                       </span>
                                     </Show>
-                                    <span class="status-labels" title={phaseTitle}>
-                                      <For each={labels}>
-                                        {(label) => (
-                                          <span class={`status-label ${label.tone}`}>
-                                            {label.text}
-                                          </span>
-                                        )}
-                                      </For>
-                                    </span>
-                                    <Show when={listColumns().showPods}>
+                                    <Show when={colVisible("status")}>
+                                      <span class="status-labels" title={phaseTitle}>
+                                        <For each={labels}>
+                                          {(label) => (
+                                            <span class={`status-label ${label.tone}`}>
+                                              {label.text}
+                                            </span>
+                                          )}
+                                        </For>
+                                      </span>
+                                    </Show>
+                                    <Show when={colVisible("pods")}>
                                       <span
                                         class="muted"
                                         title="Running pods / allocatable pod limit"
@@ -1841,12 +1966,16 @@ function App() {
                                         {podsForNode(obj)}
                                       </span>
                                     </Show>
-                                    <Show when={listColumns().showMetrics}>
+                                    <Show when={colVisible("metrics")}>
                                       <span class="muted">{metricFor(obj)}</span>
                                     </Show>
-                                    <span class="muted">
-                                      {ageFromTimestamp(obj.metadata?.creationTimestamp as string)}
-                                    </span>
+                                    <Show when={colVisible("age")}>
+                                      <span class="muted">
+                                        {ageFromTimestamp(
+                                          obj.metadata?.creationTimestamp as string,
+                                        )}
+                                      </span>
+                                    </Show>
                                   </div>
                                 );
                               }}
@@ -1915,12 +2044,12 @@ function App() {
                                           setScaleReplicas(Number(e.currentTarget.value))
                                         }
                                       />
-                                      <button class="btn" onClick={() => doAction("scale")}>
+                                      <button class="btn" onClick={() => void doAction("scale")}>
                                         Scale
                                       </button>
                                     </Show>
                                     <Show when={canRestartKind(store.selectedKind().kind)}>
-                                      <button class="btn" onClick={() => doAction("restart")}>
+                                      <button class="btn" onClick={() => void doAction("restart")}>
                                         Restart
                                       </button>
                                     </Show>
@@ -2035,9 +2164,13 @@ function App() {
                                       <dl class="kv">
                                         <dt>Kind</dt>
                                         <dd>{String(obj().kind || store.selectedKind().kind)}</dd>
-                                        <Show when={listColumns().showNamespace}>
+                                        <Show when={listColumnCaps().namespace}>
                                           <dt>Namespace</dt>
                                           <dd>{objectNamespace(obj()) || "—"}</dd>
+                                        </Show>
+                                        <Show when={listColumnCaps().node}>
+                                          <dt>Node</dt>
+                                          <dd class="mono">{podNodeName(obj()) || "—"}</dd>
                                         </Show>
                                         <dt>UID</dt>
                                         <dd class="mono">{objectKey(obj())}</dd>

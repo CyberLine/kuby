@@ -45,6 +45,7 @@ sentry = { version = "0.49.2", default-features = false, features = [
   "reqwest",
   "rustls",
 ] }
+tauri-plugin-dialog = "2"
 
 [lints.clippy]
 dbg_macro = "deny"

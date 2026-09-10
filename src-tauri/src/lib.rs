@@ -125,6 +125,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
@@ -165,6 +166,7 @@ pub fn run() {
             commands::cluster::get_auth_info,
             commands::resources::list_api_resources,
             commands::resources::list_namespaces,
+            commands::resources::create_namespace,
             commands::resources::get_resource,
             commands::resources::get_resource_yaml,
             commands::resources::apply_yaml,

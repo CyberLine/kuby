@@ -76,6 +76,49 @@ pub async fn list_namespaces(
     }
 }
 
+fn is_valid_namespace_name(name: &str) -> bool {
+    let len = name.len();
+    (1..=63).contains(&len)
+        && name
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| match b {
+                b'a'..=b'z' | b'0'..=b'9' => true,
+                b'-' => i > 0 && i + 1 < len,
+                _ => false,
+            })
+}
+
+#[tauri::command]
+pub async fn create_namespace(
+    state: State<'_, AppState>,
+    context: String,
+    name: String,
+) -> Result<String> {
+    let name = name.trim();
+    if !is_valid_namespace_name(name) {
+        return Err(KubyError::Message(if name.is_empty() {
+            "Enter a namespace name.".into()
+        } else {
+            format!(
+                "Invalid namespace \"{name}\". Use a DNS label (lowercase, digits, hyphens)."
+            )
+        }));
+    }
+
+    let client = state.manager.client(&context)?;
+    let api: Api<Namespace> = Api::all(client);
+    let ns = Namespace {
+        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(name.to_string()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let created = api.create(&PostParams::default(), &ns).await?;
+    Ok(created.name_any())
+}
+
 #[tauri::command]
 pub async fn get_resource(
     state: State<'_, AppState>,
