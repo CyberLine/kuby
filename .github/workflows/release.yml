@@ -123,18 +123,28 @@ jobs:
       - name: Sync Cargo.toml version
         run: pnpm sync-version
 
+      - name: Setup Apple signing keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: bash .github/scripts/setup-apple-signing-keychain.sh
+
       - name: Build & sign (skip notarization)
         uses: tauri-apps/tauri-action@v1
         env:
-          # Signing only — omit APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID so Tauri
-          # does not call notarytool here.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # Use the keychain from the setup step. Do NOT pass APPLE_CERTIFICATE
+          # here — Tauri would create another temp keychain and hit
+          # errSecInternalComponent on self-hosted runners.
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           args: --target universal-apple-darwin
+
+      - name: Cleanup signing keychain
+        if: always() && env.APPLE_KEYCHAIN_PATH != ''
+        run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
 
   macos-notarize:
     name: macOS notarize & upload
@@ -166,15 +176,20 @@ jobs:
       - name: Sync Cargo.toml version
         run: pnpm sync-version
 
+      - name: Setup Apple signing keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: bash .github/scripts/setup-apple-signing-keychain.sh
+
       - name: Notarize, staple & upload release assets
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -189,3 +204,7 @@ jobs:
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           args: --target universal-apple-darwin
+
+      - name: Cleanup signing keychain
+        if: always() && env.APPLE_KEYCHAIN_PATH != ''
+        run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
