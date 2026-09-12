@@ -1,8 +1,11 @@
+use std::time::Duration;
+
 use kube::api::{Api, ApiResource, DynamicObject, ListParams};
 use kube::core::GroupVersionKind;
 use kube::ResourceExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::time::timeout;
 
 use crate::error::{kube_api_message, kube_is_forbidden, kube_is_not_found, Result};
 use crate::k8s::ClusterManager;
@@ -207,6 +210,80 @@ fn format_bytes(n: i64) -> String {
     } else {
         format!("{n}")
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeStats {
+    pub name: String,
+    /// Root filesystem used bytes from kubelet stats/summary (best-effort).
+    pub fs_used_bytes: Option<i64>,
+    pub fs_capacity_bytes: Option<i64>,
+}
+
+const NODE_STATS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Fetch kubelet node stats via the API server proxy.
+///
+/// Missing RBAC (403), missing endpoint (404), or timeout returns an empty
+/// NodeStats (no error) so the UI can still show capacity from the Node object.
+pub async fn get_node_stats(
+    manager: &ClusterManager,
+    context: &str,
+    name: &str,
+) -> Result<NodeStats> {
+    let empty = NodeStats {
+        name: name.to_string(),
+        fs_used_bytes: None,
+        fs_capacity_bytes: None,
+    };
+    let client = match manager.client(context) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!(context, node = name, error = %e, "node stats: no client");
+            return Ok(empty);
+        }
+    };
+
+    let path = format!("/api/v1/nodes/{name}/proxy/stats/summary");
+    let req = match http::Request::get(&path).body(Vec::new()) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(node = name, error = %e, "node stats: bad request");
+            return Ok(empty);
+        }
+    };
+
+    let result = timeout(NODE_STATS_TIMEOUT, client.request::<serde_json::Value>(req)).await;
+    let value = match result {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            if kube_is_forbidden(&e) || kube_is_not_found(&e) {
+                tracing::debug!(node = name, error = %kube_api_message(&e), "node stats unavailable");
+            } else {
+                tracing::warn!(node = name, error = %kube_api_message(&e), "node stats unavailable");
+            }
+            return Ok(empty);
+        }
+        Err(_) => {
+            tracing::debug!(node = name, "node stats timed out");
+            return Ok(empty);
+        }
+    };
+
+    let fs = value.pointer("/node/fs");
+    let used = fs
+        .and_then(|f| f.get("usedBytes"))
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64)));
+    let capacity = fs
+        .and_then(|f| f.get("capacityBytes"))
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64)));
+
+    Ok(NodeStats {
+        name: name.to_string(),
+        fs_used_bytes: used,
+        fs_capacity_bytes: capacity,
+    })
 }
 
 pub fn diff_yaml(left: &str, right: &str) -> serde_json::Value {

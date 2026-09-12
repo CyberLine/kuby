@@ -1,4 +1,20 @@
-export const CURATED_NAV = [
+export type CuratedNavItem = {
+  kind: string;
+  apiVersion: string;
+  group: string;
+  /** Sidebar label when different from kind (e.g. Longhorn → Overview). */
+  label?: string;
+};
+
+/** Pseudo-kind for the Longhorn dashboard (only shown when CRDs are present). */
+export const LONGHORN_OVERVIEW_NAV: CuratedNavItem = {
+  kind: "Longhorn",
+  apiVersion: "kuby.io/longhorn",
+  group: "Storage",
+  label: "Overview",
+};
+
+export const CURATED_NAV: CuratedNavItem[] = [
   { kind: "Overview", apiVersion: "kuby.io/overview", group: "Workloads" },
   { kind: "Pod", apiVersion: "v1", group: "Workloads" },
   { kind: "Deployment", apiVersion: "apps/v1", group: "Workloads" },
@@ -17,6 +33,7 @@ export const CURATED_NAV = [
   { kind: "Endpoints", apiVersion: "v1", group: "Network" },
   { kind: "ConfigMap", apiVersion: "v1", group: "Config" },
   { kind: "Secret", apiVersion: "v1", group: "Config" },
+  LONGHORN_OVERVIEW_NAV,
   { kind: "PersistentVolumeClaim", apiVersion: "v1", group: "Storage" },
   { kind: "PersistentVolume", apiVersion: "v1", group: "Storage" },
   { kind: "StorageClass", apiVersion: "storage.k8s.io/v1", group: "Storage" },
@@ -48,7 +65,41 @@ export const CURATED_NAV = [
   { kind: "PodDisruptionBudget", apiVersion: "policy/v1", group: "Cluster" },
   { kind: "LimitRange", apiVersion: "v1", group: "Cluster" },
   { kind: "ResourceQuota", apiVersion: "v1", group: "Cluster" },
-] as const;
+];
+
+/** True when API discovery found any longhorn.io resource. */
+export function clusterHasLonghorn(
+  discovered: { group?: string; apiVersion?: string }[] | undefined | null,
+): boolean {
+  if (!discovered?.length) return false;
+  return discovered.some(
+    (r) => r.group === "longhorn.io" || (r.apiVersion || "").startsWith("longhorn.io/"),
+  );
+}
+
+/** Prefer v1beta2, then v1beta1, else first discovered apiVersion for a Longhorn kind. */
+export function longhornApiVersion(
+  discovered: { group?: string; kind?: string; apiVersion?: string }[] | undefined | null,
+  kind: string,
+): string | null {
+  if (!discovered?.length) return null;
+  const matches = discovered.filter(
+    (r) =>
+      r.kind === kind &&
+      (r.group === "longhorn.io" || (r.apiVersion || "").startsWith("longhorn.io/")),
+  );
+  if (!matches.length) return null;
+  const prefer = matches.find((r) => (r.apiVersion || "").endsWith("/v1beta2"));
+  if (prefer?.apiVersion) return prefer.apiVersion;
+  const beta1 = matches.find((r) => (r.apiVersion || "").endsWith("/v1beta1"));
+  if (beta1?.apiVersion) return beta1.apiVersion;
+  return matches[0]?.apiVersion || null;
+}
+
+/** Pseudo kinds that have no resource list / watch. */
+export function isPseudoKind(kind: string): boolean {
+  return kind === "Overview" || kind === "Longhorn";
+}
 
 /** Kinds watched for the namespace relationship graph (KubeView parity). */
 export const GRAPH_KINDS = [
@@ -120,11 +171,46 @@ export function kindHasNodeColumn(kind: string): boolean {
   return kind === "Pod";
 }
 
+/** Aggregated metrics APIs are computed snapshots — kube watch needs resourceVersion. */
+const LIST_ONLY_API_GROUPS = new Set([
+  "metrics.k8s.io",
+  "custom.metrics.k8s.io",
+  "external.metrics.k8s.io",
+]);
+
+function apiGroupOf(r: { group?: string; apiVersion?: string }): string {
+  if (r.group) return r.group;
+  const av = r.apiVersion || "";
+  const slash = av.indexOf("/");
+  return slash >= 0 ? av.slice(0, slash) : "";
+}
+
 /** False for create-only APIs (TokenReview, SubjectAccessReview, …). */
-export function resourceIsWatchable(r: { watchable?: boolean; verbs?: string[] }): boolean {
+export function resourceIsListable(r: {
+  listable?: boolean;
+  watchable?: boolean;
+  verbs?: string[];
+}): boolean {
+  if (typeof r.listable === "boolean") return r.listable;
+  if (!r.verbs?.length) {
+    // Older payloads used watchable to mean "not create-only".
+    if (typeof r.watchable === "boolean") return r.watchable;
+    return true;
+  }
+  return r.verbs.includes("list") || r.verbs.includes("watch");
+}
+
+/** False when the API has no WATCH verb, or objects lack resourceVersion. */
+export function resourceIsWatchable(r: {
+  group?: string;
+  apiVersion?: string;
+  watchable?: boolean;
+  verbs?: string[];
+}): boolean {
+  if (LIST_ONLY_API_GROUPS.has(apiGroupOf(r))) return false;
   if (typeof r.watchable === "boolean") return r.watchable;
   if (!r.verbs?.length) return true;
-  return r.verbs.includes("list") || r.verbs.includes("watch");
+  return r.verbs.includes("watch");
 }
 
 export function objectKey(obj: {

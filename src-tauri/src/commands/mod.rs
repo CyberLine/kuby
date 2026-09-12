@@ -3,6 +3,7 @@ pub mod cluster;
 pub mod diff;
 pub mod exec_cmd;
 pub mod logs;
+pub mod longhorn;
 pub mod metrics_cmd;
 pub mod nodes;
 pub mod overview;

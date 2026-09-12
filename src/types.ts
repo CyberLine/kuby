@@ -45,6 +45,7 @@ export interface DiscoveredResource {
   verbs: string[];
   apiVersion: string;
   curated: boolean;
+  listable: boolean;
   watchable: boolean;
 }
 
@@ -123,6 +124,12 @@ export interface NodeMetrics {
   memory: string;
 }
 
+export interface NodeStats {
+  name: string;
+  fsUsedBytes?: number | null;
+  fsCapacityBytes?: number | null;
+}
+
 export interface OverviewSegment {
   label: string;
   count: number;
@@ -183,6 +190,39 @@ export interface WorkloadOverview {
   warnings: OverviewWarning[];
   restarts: OverviewRestart[];
   usage: OverviewUsage[];
+}
+
+export interface LonghornStorage {
+  maximum: number;
+  available: number;
+  reserved: number;
+  scheduled: number;
+  disabled: number;
+  volumeSize: number;
+  actualSize: number;
+}
+
+export interface LonghornEvent {
+  reason: string;
+  count: number;
+  lastSeen: string;
+  age: string;
+  message: string;
+  involved: string;
+  involvedKind: string;
+  involvedName: string;
+  involvedNamespace?: string | null;
+  involvedApiVersion?: string | null;
+  context: string;
+}
+
+export interface LonghornOverview {
+  volumeApiVersion?: string | null;
+  nodeApiVersion?: string | null;
+  volume: OverviewCard;
+  node: OverviewCard;
+  storage: LonghornStorage;
+  events: LonghornEvent[];
 }
 
 export interface DiffHunk {

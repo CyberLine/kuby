@@ -6,11 +6,13 @@ import type {
   DiscoveredResource,
   NamespaceListResult,
   NodeMetrics,
+  NodeStats,
   PodMetrics,
   PortForwardInfo,
   ResourceIdentifier,
   RollbackResult,
   WorkloadOverview,
+  LonghornOverview,
 } from "../types";
 
 export const api = {
@@ -143,12 +145,16 @@ export const api = {
   getPodMetrics: (context: string, namespace?: string | null) =>
     invoke<PodMetrics[]>("get_pod_metrics", { context, namespace }),
   getNodeMetrics: (context: string) => invoke<NodeMetrics[]>("get_node_metrics", { context }),
+  getNodeStats: (context: string, name: string) =>
+    invoke<NodeStats>("get_node_stats", { context, name }),
   getWorkloadOverview: (context: string, namespaces: string[], usageThreshold?: number) =>
     invoke<WorkloadOverview>("get_workload_overview", {
       context,
       namespaces,
       usageThreshold,
     }),
+  getLonghornOverview: (context: string) =>
+    invoke<LonghornOverview>("get_longhorn_overview", { context }),
   diffResources: (leftYaml: string, rightYaml: string) =>
     invoke<{ hunks: DiffHunk[] }>("diff_resources", { leftYaml, rightYaml }),
   setTelemetryEnabled: (enabled: boolean) => invoke<void>("set_telemetry_enabled", { enabled }),

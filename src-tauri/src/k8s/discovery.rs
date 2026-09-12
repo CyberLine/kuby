@@ -21,7 +21,9 @@ pub struct DiscoveredResource {
     pub verbs: Vec<String>,
     pub api_version: String,
     pub curated: bool,
-    /// False for create-only APIs such as TokenReview (no LIST/WATCH).
+    /// False for create-only APIs such as TokenReview (no LIST).
+    pub listable: bool,
+    /// False when the API has no WATCH verb, or objects lack resourceVersion (metrics.k8s.io).
     pub watchable: bool,
 }
 
@@ -67,6 +69,7 @@ impl DiscoveryCache {
                     verbs: caps.operations.clone(),
                     api_version: api_version.clone(),
                     curated,
+                    listable: is_listable(&ar.group, &ar.kind, &caps.operations),
                     watchable: is_watchable(&ar.group, &ar.kind, &caps.operations),
                 });
                 by_gvk.insert(key, ar);
@@ -123,19 +126,27 @@ impl DiscoveryCache {
             .ok_or_else(|| KubyError::Message(format!("resource not found: {api_version}/{kind}")))
     }
 
+    pub fn is_listable(&self, api_version: &str, kind: &str) -> bool {
+        self.lookup(api_version, kind)
+            .map(|r| r.listable)
+            .unwrap_or(true)
+    }
+
     pub fn is_watchable(&self, api_version: &str, kind: &str) -> bool {
-        if let Some(r) = self
-            .resources
-            .iter()
-            .find(|r| r.api_version == api_version && r.kind == kind)
-        {
-            return r.watchable;
-        }
-        self.resources
-            .iter()
-            .find(|r| r.kind.eq_ignore_ascii_case(kind))
+        self.lookup(api_version, kind)
             .map(|r| r.watchable)
             .unwrap_or(true)
+    }
+
+    fn lookup(&self, api_version: &str, kind: &str) -> Option<&DiscoveredResource> {
+        self.resources
+            .iter()
+            .find(|r| r.api_version == api_version && r.kind == kind)
+            .or_else(|| {
+                self.resources
+                    .iter()
+                    .find(|r| r.kind.eq_ignore_ascii_case(kind))
+            })
     }
 }
 
@@ -154,14 +165,89 @@ const CREATE_ONLY: &[(&str, &str)] = &[
     ("", "Binding"),
 ];
 
-pub fn is_watchable(group: &str, kind: &str, verbs: &[String]) -> bool {
-    if CREATE_ONLY.iter().any(|(g, k)| *g == group && *k == kind) {
+/// Aggregated metrics APIs are list-only: objects are computed and have no resourceVersion.
+const LIST_ONLY_GROUPS: &[&str] = &[
+    "metrics.k8s.io",
+    "custom.metrics.k8s.io",
+    "external.metrics.k8s.io",
+];
+
+fn has_verb(verbs: &[String], verb: &str) -> bool {
+    verbs.iter().any(|v| v.eq_ignore_ascii_case(verb))
+}
+
+fn is_create_only(group: &str, kind: &str) -> bool {
+    CREATE_ONLY.iter().any(|(g, k)| *g == group && *k == kind)
+}
+
+fn is_list_only_group(group: &str) -> bool {
+    LIST_ONLY_GROUPS.iter().any(|g| *g == group)
+}
+
+pub fn is_listable(group: &str, kind: &str, verbs: &[String]) -> bool {
+    if is_create_only(group, kind) {
         return false;
     }
     if verbs.is_empty() {
         return true;
     }
-    verbs.iter().any(|v| v == "list" || v == "watch")
+    has_verb(verbs, "list")
+}
+
+pub fn is_watchable(group: &str, kind: &str, verbs: &[String]) -> bool {
+    if is_create_only(group, kind) || is_list_only_group(group) {
+        return false;
+    }
+    if verbs.is_empty() {
+        return true;
+    }
+    has_verb(verbs, "watch")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verbs(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn metrics_are_listable_but_not_watchable() {
+        let v = verbs(&["get", "list"]);
+        assert!(is_listable("metrics.k8s.io", "PodMetrics", &v));
+        assert!(!is_watchable("metrics.k8s.io", "PodMetrics", &v));
+        assert!(is_listable("metrics.k8s.io", "NodeMetrics", &v));
+        assert!(!is_watchable("metrics.k8s.io", "NodeMetrics", &v));
+    }
+
+    #[test]
+    fn metrics_stay_unwatchable_even_if_watch_is_advertised() {
+        let v = verbs(&["get", "list", "watch"]);
+        assert!(!is_watchable("metrics.k8s.io", "PodMetrics", &v));
+        assert!(!is_watchable("custom.metrics.k8s.io", "MetricValue", &v));
+    }
+
+    #[test]
+    fn pods_are_listable_and_watchable() {
+        let v = verbs(&["get", "list", "watch", "create"]);
+        assert!(is_listable("", "Pod", &v));
+        assert!(is_watchable("", "Pod", &v));
+    }
+
+    #[test]
+    fn token_review_is_neither() {
+        let v = verbs(&["create"]);
+        assert!(!is_listable("authentication.k8s.io", "TokenReview", &v));
+        assert!(!is_watchable("authentication.k8s.io", "TokenReview", &v));
+    }
+
+    #[test]
+    fn generic_list_without_watch_skips_watch() {
+        let v = verbs(&["get", "list"]);
+        assert!(is_listable("example.com", "Foo", &v));
+        assert!(!is_watchable("example.com", "Foo", &v));
+    }
 }
 
 const CURATED: &[(&str, &str)] = &[

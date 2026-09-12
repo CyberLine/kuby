@@ -193,8 +193,10 @@ pub fn run() {
             commands::portforward_cmd::stop_port_forward,
             commands::metrics_cmd::get_pod_metrics,
             commands::metrics_cmd::get_node_metrics,
+            commands::metrics_cmd::get_node_stats,
             commands::diff::diff_resources,
             commands::overview::get_workload_overview,
+            commands::longhorn::get_longhorn_overview,
             commands::telemetry::set_telemetry_enabled,
         ])
         .run(tauri::generate_context!())

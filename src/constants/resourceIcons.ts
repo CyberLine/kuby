@@ -48,7 +48,7 @@ const crdUrl = urlForBasename("crd");
 
 /** Resolve icon URL for a resource kind (falls back to generic CRD icon). */
 export function resourceIconUrl(kind: string): string | null {
-  if (kind === "Overview") return null;
+  if (kind === "Overview" || kind === "Longhorn") return null;
   const basename = KIND_ICON[kind] || "crd";
   return urlForBasename(basename) || crdUrl;
 }

@@ -19,9 +19,12 @@ import { ContextPicker } from "./components/ContextPicker";
 import { ExecTerminal } from "./components/ExecTerminal";
 import { LoadingSpinner } from "./components/LoadingSpinner";
 import { LogViewer } from "./components/LogViewer";
+import { LonghornOverviewView } from "./components/LonghornOverviewView";
 import { NamespaceGraphView } from "./components/NamespaceGraphView";
 import { NamespacePicker } from "./components/NamespacePicker";
+import { NodeDetailView } from "./components/NodeDetailView";
 import { OverviewView } from "./components/OverviewView";
+import { PodContainersSection } from "./components/PodContainersSection";
 import {
   isOpaqueSecret,
   ResourceDataEditor,
@@ -42,15 +45,16 @@ import {
 } from "./constants/actions";
 import {
   ageFromTimestamp,
+  clusterHasLonghorn,
   CURATED_NAV,
-  kindHasMetricsColumn,
+  isPseudoKind,
   kindHasNamespaceColumn,
   kindHasNodeColumn,
-  kindHasPodsColumn,
+  longhornApiVersion,
   objectKey,
   objectName,
   objectNamespace,
-  resourceIsWatchable,
+  resourceIsListable,
 } from "./constants/resources";
 import { clusterStore } from "./stores/cluster";
 import { telemetryStore } from "./stores/telemetry";
@@ -75,6 +79,12 @@ import {
   toggleColumnHidden,
   visibleColumns,
 } from "./utils/listColumns";
+import {
+  isCoreNode,
+  isLonghornApi,
+  longhornNodeStatusLabel,
+  longhornVolumeStatusLabel,
+} from "./utils/longhornStatus";
 import {
   formatNodePodUsage,
   isNodeUnschedulable,
@@ -199,6 +209,7 @@ function App() {
     typeof navigator !== "undefined" ? navigator.onLine : true,
   );
   const [pendingSelectName, setPendingSelectName] = createSignal<string | null>(null);
+  const [viewingNodeName, setViewingNodeName] = createSignal<string | null>(null);
   const [checkedKeys, setCheckedKeys] = createSignal<Set<string>>(new Set());
   const [lastClickedIndex, setLastClickedIndex] = createSignal<number | null>(null);
   const [ctxMenu, setCtxMenu] = createSignal<{
@@ -450,6 +461,7 @@ function App() {
     if (store.visualizeNamespace()) {
       await store.stopGraphWatches();
     }
+    setViewingNodeName(null);
     store.clearListFilters();
     store.setSelectedObjectKey(null);
     store.setSelectedKind({ apiVersion: "kuby.io/overview", kind: "Overview" });
@@ -503,9 +515,34 @@ function App() {
   });
 
   const nodePodCounts = createMemo(() => {
-    if (store.selectedKind().kind !== "Node") return {} as Record<string, number>;
+    if (!isCoreNode(store.selectedKind().kind, store.selectedKind().apiVersion)) {
+      return {} as Record<string, number>;
+    }
     return store.podCountByNodeName();
   });
+
+  const menuLocked = createMemo(
+    () => Boolean(store.visualizeNamespace()) || Boolean(viewingNodeName()),
+  );
+
+  const viewingNode = createMemo(() => {
+    const name = viewingNodeName();
+    const sel = store.selectedKind();
+    if (!name || !isCoreNode(sel.kind, sel.apiVersion)) return null;
+    return objects().find((o) => objectName(o) === name) || null;
+  });
+
+  function closeNodeDetail() {
+    setViewingNodeName(null);
+  }
+
+  function openNodeDetail(obj: K8sObject) {
+    const name = objectName(obj);
+    if (!name) return;
+    store.setSelectedObjectKey(null);
+    setPanel("detail");
+    setViewingNodeName(name);
+  }
 
   const selectedPodPorts = createMemo(() => {
     if (store.selectedKind().kind !== "Pod") return [];
@@ -562,6 +599,7 @@ function App() {
   });
 
   function openRelation(link: RelationLink) {
+    closeNodeDetail();
     store.clearListFilters();
     store.setSelectedObjectKey(null);
     store.setSelectedKind({ apiVersion: link.apiVersion, kind: link.kind });
@@ -586,6 +624,7 @@ function App() {
   async function openVisualize(namespace: string) {
     if (!namespace || namespace === "*") return;
     setCtxMenu(null);
+    setViewingNodeName(null);
     store.setSelectedObjectKey(null);
     store.setSelectedNamespaces(store.selectedContext(), [namespace]);
     await store.startGraphWatches(namespace);
@@ -608,18 +647,26 @@ function App() {
   }
 
   const navItems = createMemo(() => {
-    if (!showAllApis()) return [...CURATED_NAV];
+    if (!showAllApis()) {
+      const ctx = store.selectedContext();
+      const hasLonghorn = clusterHasLonghorn(store.apiResources[ctx] || []);
+      return CURATED_NAV.filter((item) => item.kind !== "Longhorn" || hasLonghorn);
+    }
     const ctx = store.selectedContext();
     const discovered = store.apiResources[ctx] || [];
-    return discovered.filter(resourceIsWatchable).map((r) => ({
+    return discovered.filter(resourceIsListable).map((r) => ({
       kind: r.kind,
       apiVersion: r.apiVersion,
       group: r.curated ? "Curated" : r.group || "core",
+      label: undefined as string | undefined,
     }));
   });
 
   const navGroups = createMemo(() => {
-    const acc: Record<string, { kind: string; apiVersion: string; group: string }[]> = {};
+    const acc: Record<
+      string,
+      { kind: string; apiVersion: string; group: string; label?: string }[]
+    > = {};
     for (const item of navItems()) {
       const group = acc[item.group] ?? [];
       group.push(item);
@@ -640,10 +687,10 @@ function App() {
 
   createEffect(() => {
     const ctx = store.selectedContext();
-    const kind = store.selectedKind().kind;
+    const sel = store.selectedKind();
     const nss = store.selectedNamespaces[ctx];
     if (!ctx || !nss) return;
-    if (kind === "Pod" || kind === "Node") {
+    if (sel.kind === "Pod" || isCoreNode(sel.kind, sel.apiVersion)) {
       untrack(() => {
         void loadMetrics(false);
       });
@@ -653,9 +700,9 @@ function App() {
   async function loadMetrics(manual = true) {
     const ctx = store.selectedContext();
     if (!ctx) return;
-    const kind = store.selectedKind().kind;
+    const sel = store.selectedKind();
     try {
-      if (kind === "Node") {
+      if (isCoreNode(sel.kind, sel.apiVersion)) {
         const m = await api.getNodeMetrics(ctx);
         setNodeMetrics(m);
         setMetrics([]);
@@ -867,12 +914,20 @@ function App() {
     if (e.metaKey || e.ctrlKey) {
       toggleChecked(key);
       setLastClickedIndex(index);
-      store.setSelectedObjectKey(key);
-      setPanel(defaultDetailPanel(obj));
+      if (isCoreNode(store.selectedKind().kind, store.selectedKind().apiVersion)) {
+        store.setSelectedObjectKey(null);
+      } else {
+        store.setSelectedObjectKey(key);
+        setPanel(defaultDetailPanel(obj));
+      }
       return;
     }
     setChecked(new Set([key]));
     setLastClickedIndex(index);
+    if (isCoreNode(store.selectedKind().kind, store.selectedKind().apiVersion)) {
+      openNodeDetail(obj);
+      return;
+    }
     store.setSelectedObjectKey(key);
     setPanel(defaultDetailPanel(obj));
   }
@@ -968,7 +1023,7 @@ function App() {
 
   async function runNodeAction(action: NodeAction, keys: string[]) {
     setCtxMenu(null);
-    if (!canNodeAction(store.selectedKind().kind) || !keys.length) return;
+    if (!canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion) || !keys.length) return;
     const objs = objectsByKeys(keys);
     if (!objs.length) return;
 
@@ -1104,10 +1159,17 @@ function App() {
     const deletionTimestamp = (obj.metadata as { deletionTimestamp?: string } | undefined)
       ?.deletionTimestamp;
     if (deletionTimestamp) return "Terminating";
-    if (store.selectedKind().kind === "Node") {
+    const sel = store.selectedKind();
+    if (isCoreNode(sel.kind, sel.apiVersion)) {
       return nodeStatusText(obj);
     }
-    if (store.selectedKind().kind === "ReplicaSet") {
+    if (sel.kind === "Node" && isLonghornApi(sel.apiVersion)) {
+      return longhornNodeStatusLabel(obj).text;
+    }
+    if (sel.kind === "Volume" && isLonghornApi(sel.apiVersion)) {
+      return longhornVolumeStatusLabel(obj).text;
+    }
+    if (sel.kind === "ReplicaSet") {
       return replicaSetStatusText(obj, replicaSetCurrent());
     }
     const status = obj.status as Record<string, unknown> | undefined;
@@ -1125,10 +1187,17 @@ function App() {
     if (deletionTimestamp) {
       return [{ text: "Terminating", tone: "warn" as const }];
     }
-    if (store.selectedKind().kind === "Node") {
+    const sel = store.selectedKind();
+    if (isCoreNode(sel.kind, sel.apiVersion)) {
       return nodeStatusLabels(obj);
     }
-    if (store.selectedKind().kind === "ReplicaSet") {
+    if (sel.kind === "Node" && isLonghornApi(sel.apiVersion)) {
+      return [longhornNodeStatusLabel(obj)];
+    }
+    if (sel.kind === "Volume" && isLonghornApi(sel.apiVersion)) {
+      return [longhornVolumeStatusLabel(obj)];
+    }
+    if (sel.kind === "ReplicaSet") {
       return replicaSetStatusLabels(obj, replicaSetCurrent());
     }
     const text = statusPhase(obj);
@@ -1140,30 +1209,47 @@ function App() {
       lower === "active" ||
       lower === "bound" ||
       lower === "succeeded" ||
-      lower === "completed"
+      lower === "completed" ||
+      lower === "healthy" ||
+      lower === "schedulable"
     ) {
       tone = "ok";
-    } else if (lower === "pending" || lower === "unknown" || lower.includes("backoff")) {
+    } else if (
+      lower === "pending" ||
+      lower === "unknown" ||
+      lower.includes("backoff") ||
+      lower === "degraded" ||
+      lower === "in progress" ||
+      lower === "unschedulable"
+    ) {
       tone = "warn";
     } else if (
       lower === "failed" ||
       lower === "error" ||
       lower === "crashloopbackoff" ||
-      lower === "imagepullbackoff"
+      lower === "imagepullbackoff" ||
+      lower === "fault" ||
+      lower === "faulted" ||
+      lower === "down"
     ) {
       tone = "err";
     }
     return [{ text, tone }];
   }
 
+  function podMetricsFor(obj: Record<string, unknown>): PodMetrics | null {
+    const name = objectName(obj as never);
+    const ns = objectNamespace(obj as never);
+    return metrics().find((x) => x.name === name && x.namespace === ns) ?? null;
+  }
+
   function metricFor(obj: Record<string, unknown>): string {
     const name = objectName(obj as never);
-    if (store.selectedKind().kind === "Node") {
+    if (isCoreNode(store.selectedKind().kind, store.selectedKind().apiVersion)) {
       const m = nodeMetrics().find((x) => x.name === name);
       return m ? `${m.cpu} / ${m.memory}` : "-";
     }
-    const ns = objectNamespace(obj as never);
-    const m = metrics().find((x) => x.name === name && x.namespace === ns);
+    const m = podMetricsFor(obj);
     return m ? `${m.cpu} / ${m.memory}` : "-";
   }
 
@@ -1278,7 +1364,7 @@ function App() {
     const discovered = (store.apiResources[store.selectedContext()] || []).find(
       (r) => r.kind === kind && r.apiVersion === store.selectedKind().apiVersion,
     );
-    if (discovered && !resourceIsWatchable(discovered)) {
+    if (discovered && !resourceIsListable(discovered)) {
       return `${kind} cannot be listed — this API only supports create, not list/watch.`;
     }
     if (store.error()) {
@@ -1292,12 +1378,13 @@ function App() {
     const discovered = (store.apiResources[store.selectedContext()] || []).find(
       (r) => r.kind === kind.kind && r.apiVersion === kind.apiVersion,
     );
+    const coreNode = isCoreNode(kind.kind, kind.apiVersion);
     return {
       namespace: discovered ? discovered.namespaced : kindHasNamespaceColumn(kind.kind),
       node: kindHasNodeColumn(kind.kind),
-      version: kind.kind === "Node",
-      pods: kindHasPodsColumn(kind.kind),
-      metrics: kindHasMetricsColumn(kind.kind),
+      version: coreNode,
+      pods: coreNode,
+      metrics: kind.kind === "Pod" || coreNode,
     };
   });
 
@@ -1537,11 +1624,13 @@ function App() {
             </div>
 
             <div
-              class={`sidebar-nav ${store.visualizeNamespace() ? "is-disabled" : ""}`}
-              inert={Boolean(store.visualizeNamespace()) || undefined}
+              class={`sidebar-nav ${menuLocked() ? "is-disabled" : ""}`}
+              inert={menuLocked() || undefined}
               title={
-                store.visualizeNamespace()
-                  ? "Close visualization to change namespaces or resources"
+                menuLocked()
+                  ? store.visualizeNamespace()
+                    ? "Close visualization to change namespaces or resources"
+                    : "Close node detail to change namespaces or resources"
                   : undefined
               }
             >
@@ -1595,6 +1684,7 @@ function App() {
                                       : ""
                                   }`}
                                   onClick={() => {
+                                    setViewingNodeName(null);
                                     store.setSelectedKind({
                                       apiVersion: item.apiVersion,
                                       kind: item.kind,
@@ -1607,7 +1697,7 @@ function App() {
                                   }}
                                 >
                                   <ResourceIcon kind={item.kind} />
-                                  <span class="nav-item-label">{item.kind}</span>
+                                  <span class="nav-item-label">{item.label || item.kind}</span>
                                 </button>
                               )}
                             </For>
@@ -1628,10 +1718,22 @@ function App() {
                   <Show
                     when={store.visualizeNamespace()}
                     fallback={
-                      <>
-                        <ResourceIcon kind={store.selectedKind().kind} />
-                        {store.selectedKind().kind}
-                      </>
+                      <Show
+                        when={viewingNodeName()}
+                        fallback={
+                          <>
+                            <ResourceIcon kind={store.selectedKind().kind} />
+                            {store.selectedKind().kind}
+                          </>
+                        }
+                      >
+                        {(nodeName) => (
+                          <>
+                            <ResourceIcon kind="Node" />
+                            Node · {nodeName()}
+                          </>
+                        )}
+                      </Show>
                     }
                   >
                     {(ns) => (
@@ -1642,9 +1744,7 @@ function App() {
                     )}
                   </Show>
                 </h1>
-                <Show
-                  when={!store.visualizeNamespace() && store.selectedKind().kind !== "Overview"}
-                >
+                <Show when={!menuLocked() && !isPseudoKind(store.selectedKind().kind)}>
                   <span class="muted">{objects().length} items</span>
                 </Show>
                 <Show when={store.statusFilter()}>
@@ -1676,9 +1776,7 @@ function App() {
                 </Show>
               </div>
               <div class="topbar-right">
-                <Show
-                  when={!store.visualizeNamespace() && store.selectedKind().kind !== "Overview"}
-                >
+                <Show when={!menuLocked() && !isPseudoKind(store.selectedKind().kind)}>
                   <input
                     class="search"
                     placeholder="Search name / labels…"
@@ -1748,8 +1846,8 @@ function App() {
 
             <div
               class={`content ${
-                !store.visualizeNamespace() &&
-                store.selectedKind().kind !== "Overview" &&
+                !menuLocked() &&
+                !isPseudoKind(store.selectedKind().kind) &&
                 store.selectedObject()
                   ? "with-detail"
                   : ""
@@ -1761,10 +1859,16 @@ function App() {
                 when={store.visualizeNamespace()}
                 fallback={
                   <Show
-                    when={store.selectedKind().kind === "Overview"}
+                    when={viewingNodeName()}
                     fallback={
-                      <div class="resource-layout">
-                        <section class="list-pane">
+                      <Show
+                        when={store.selectedKind().kind === "Overview"}
+                        fallback={
+                          <Show
+                            when={store.selectedKind().kind === "Longhorn"}
+                            fallback={
+                              <div class="resource-layout">
+                                <section class="list-pane">
                           <Show when={checkedKeys().size > 0}>
                             <div class="selection-bar">
                               <span>{checkedKeys().size} selected</span>
@@ -1777,7 +1881,7 @@ function App() {
                                     Delete
                                   </button>
                                 </Show>
-                                <Show when={canNodeAction(store.selectedKind().kind)}>
+                                <Show when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}>
                                   <Show when={selectionHasSchedulableNode([...checkedKeys()])}>
                                     <button
                                       class="btn"
@@ -2063,7 +2167,7 @@ function App() {
                                         Rollback to this revision
                                       </button>
                                     </Show>
-                                    <Show when={canNodeAction(store.selectedKind().kind)}>
+                                    <Show when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}>
                                       <Show when={!isNodeUnschedulable(obj())}>
                                         <button
                                           class="btn"
@@ -2152,6 +2256,14 @@ function App() {
                                           </For>
                                         </section>
                                       </Show>
+                                      <Show when={store.selectedKind().kind === "Pod"}>
+                                        <PodContainersSection
+                                          pod={obj()}
+                                          metrics={podMetricsFor(
+                                            obj() as unknown as Record<string, unknown>,
+                                          )}
+                                        />
+                                      </Show>
                                       <dl class="kv">
                                         <dt>Kind</dt>
                                         <dd>{String(obj().kind || store.selectedKind().kind)}</dd>
@@ -2165,54 +2277,54 @@ function App() {
                                         </Show>
                                         <dt>UID</dt>
                                         <dd class="mono">{objectKey(obj())}</dd>
-                                        <dt>Labels</dt>
-                                        <dd>
-                                          <Show
-                                            when={Object.keys(obj().metadata?.labels || {}).length}
-                                            fallback={<span class="muted">—</span>}
-                                          >
-                                            <table class="meta-table">
-                                              <thead>
-                                                <tr>
-                                                  <th>Key</th>
-                                                  <th>Value</th>
-                                                </tr>
-                                              </thead>
-                                              <tbody>
-                                                <For
-                                                  each={Object.entries(
-                                                    obj().metadata?.labels || {},
-                                                  )}
-                                                >
-                                                  {([key, value]) => (
-                                                    <tr>
-                                                      <td class="mono">{key}</td>
-                                                      <td class="mono">{String(value)}</td>
-                                                    </tr>
-                                                  )}
-                                                </For>
-                                              </tbody>
-                                            </table>
-                                          </Show>
-                                        </dd>
+                                      </dl>
+                                      <section class="detail-block">
+                                        <h3>Labels</h3>
                                         <Show
-                                          when={
-                                            obj().status != null &&
-                                            typeof obj().status === "object" &&
-                                            Object.keys(obj().status as object).length > 0
-                                          }
+                                          when={Object.keys(obj().metadata?.labels || {}).length}
+                                          fallback={<span class="muted">—</span>}
                                         >
-                                          <dt>Status</dt>
-                                          <dd class="kv-json">
+                                          <table class="meta-table">
+                                            <thead>
+                                              <tr>
+                                                <th>Key</th>
+                                                <th>Value</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              <For
+                                                each={Object.entries(obj().metadata?.labels || {})}
+                                              >
+                                                {([key, value]) => (
+                                                  <tr>
+                                                    <td class="mono">{key}</td>
+                                                    <td class="mono">{String(value)}</td>
+                                                  </tr>
+                                                )}
+                                              </For>
+                                            </tbody>
+                                          </table>
+                                        </Show>
+                                      </section>
+                                      <Show
+                                        when={
+                                          obj().status != null &&
+                                          typeof obj().status === "object" &&
+                                          Object.keys(obj().status as object).length > 0
+                                        }
+                                      >
+                                        <section class="detail-block">
+                                          <h3>Status</h3>
+                                          <div class="kv-json">
                                             <CodeEditor
                                               language="json"
                                               readOnly
                                               compact
                                               value={JSON.stringify(obj().status, null, 2)}
                                             />
-                                          </dd>
-                                        </Show>
-                                      </dl>
+                                          </div>
+                                        </section>
+                                      </Show>
                                     </div>
                                   </Show>
 
@@ -2369,6 +2481,65 @@ function App() {
                           </Show>
                         </Show>
                       </div>
+                        }
+                      >
+                        <LonghornOverviewView
+                          context={store.selectedContext()}
+                          onOpenResource={(target) => {
+                            const apiVersion = resolveResourceApiVersion(
+                              target.kind,
+                              target.apiVersion,
+                              store.apiResources[store.selectedContext()] || [],
+                            );
+                            if (!apiVersion || !target.kind || !target.name) return;
+                            store.clearListFilters();
+                            store.setSelectedObjectKey(null);
+                            setViewingNodeName(null);
+                            store.setSelectedKind({
+                              apiVersion,
+                              kind: target.kind,
+                            });
+                            if (target.namespace) {
+                              store.setSelectedNamespaces(store.selectedContext(), [
+                                target.namespace,
+                              ]);
+                            }
+                            store.setSearchQuery(target.name);
+                            setPendingSelectName(target.name);
+                            setPanel("detail");
+                          }}
+                          onOpenSegment={(cardKind, statusLabel) => {
+                            const ctx = store.selectedContext();
+                            setViewingNodeName(null);
+                            store.setSelectedObjectKey(null);
+                            store.clearListFilters();
+
+                            if (cardKind === "Node") {
+                              // Use the curated Kubernetes Node list + NodeDetailView.
+                              // Map Longhorn dashboard labels onto kubelet status chips.
+                              const mapped =
+                                statusLabel === "Down"
+                                  ? "NotReady"
+                                  : statusLabel === "Disabled" || statusLabel === "Unschedulable"
+                                    ? "SchedulingDisabled"
+                                    : statusLabel === "Schedulable"
+                                      ? "Ready"
+                                      : statusLabel || null;
+                              store.setSelectedKind({ apiVersion: "v1", kind: "Node" });
+                              store.setStatusFilter(mapped);
+                              return;
+                            }
+
+                            const discovered = store.apiResources[ctx] || [];
+                            const apiVersion = longhornApiVersion(discovered, cardKind);
+                            if (!apiVersion) return;
+                            // Longhorn Volume CRs live in longhorn-system; show all namespaces.
+                            store.setSelectedNamespaces(ctx, ["*"]);
+                            store.setSelectedKind({ apiVersion, kind: cardKind });
+                            store.setStatusFilter(statusLabel || null);
+                          }}
+                        />
+                      </Show>
                     }
                   >
                     <OverviewView
@@ -2383,6 +2554,7 @@ function App() {
                         if (!apiVersion || !target.kind || !target.name) return;
                         store.clearListFilters();
                         store.setSelectedObjectKey(null);
+                        setViewingNodeName(null);
                         store.setSelectedKind({
                           apiVersion,
                           kind: target.kind,
@@ -2397,12 +2569,64 @@ function App() {
                       onOpenSegment={(cardKind, statusLabel) => {
                         const target = overviewKindToResource(cardKind);
                         if (!target) return;
+                        setViewingNodeName(null);
                         store.setSelectedKind(target);
                         store.setSelectedObjectKey(null);
                         store.clearListFilters();
                         store.setStatusFilter(statusLabel || null);
                       }}
                     />
+                  </Show>
+                    }
+                  >
+                    {(_nodeName) => (
+                      <Show
+                        when={viewingNode()}
+                        fallback={
+                          <section class="node-detail-overlay">
+                            <header class="node-detail-toolbar">
+                              <button type="button" class="btn" onClick={closeNodeDetail}>
+                                ← Back
+                              </button>
+                              <div class="node-detail-toolbar-title">
+                                <ResourceIcon kind="Node" />
+                                <span class="mono">{viewingNodeName()}</span>
+                              </div>
+                            </header>
+                            <p class="muted" style={{ padding: "12px 0" }}>
+                              Node not found in the current list.
+                            </p>
+                          </section>
+                        }
+                      >
+                        {(node) => (
+                          <NodeDetailView
+                            context={store.selectedContext()}
+                            node={node}
+                            pods={() => store.podsOnNode(objectName(node()))}
+                            podsReady={store.nodePodCountsReady()}
+                            onBack={closeNodeDetail}
+                            onNodeAction={(action) => {
+                              const obj = viewingNode();
+                              if (!obj) return;
+                              void runNodeAction(action, [objectKey(obj)]);
+                            }}
+                            onOpenPod={(namespace, podName) => {
+                              closeNodeDetail();
+                              openRelation({
+                                id: `pod:${namespace}/${podName}`,
+                                group: "Workload",
+                                title: podName,
+                                apiVersion: "v1",
+                                kind: "Pod",
+                                namespace,
+                                name: podName,
+                              });
+                            }}
+                          />
+                        )}
+                      </Show>
+                    )}
                   </Show>
                 }
               >
@@ -2467,7 +2691,7 @@ function App() {
                     Visualize
                   </button>
                 </Show>
-                <Show when={canNodeAction(store.selectedKind().kind)}>
+                <Show when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}>
                   <Show when={selectionHasSchedulableNode(menu().keys)}>
                     <button
                       class="ctx-item"

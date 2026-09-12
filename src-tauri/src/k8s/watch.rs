@@ -56,9 +56,14 @@ pub async fn start_watch(
 ) -> Result<String> {
     let key = watch_key(&context, &api_version, &kind, namespace.as_deref());
     let cache = manager.discovery(&context).await?;
-    if !cache.is_watchable(&api_version, &kind) {
+    if !cache.is_listable(&api_version, &kind) {
         return Err(KubyError::Message(format!(
             "{kind} cannot be listed or watched; Kubernetes only allows creating this resource"
+        )));
+    }
+    if !cache.is_watchable(&api_version, &kind) {
+        return Err(KubyError::Message(format!(
+            "{kind} does not support watch (list-only API)"
         )));
     }
 

@@ -2778,6 +2778,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "futures",
+ "http 1.5.0",
  "json-patch 4.2.0",
  "k8s-openapi",
  "kube",

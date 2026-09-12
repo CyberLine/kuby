@@ -20,7 +20,7 @@ export function ResourceIcon(props: Props) {
         when={url()}
         fallback={
           <Show
-            when={props.kind === "Overview"}
+            when={props.kind === "Overview" || props.kind === "Longhorn"}
             fallback={
               <span class="resource-icon-fallback">{(props.kind[0] || "?").toUpperCase()}</span>
             }

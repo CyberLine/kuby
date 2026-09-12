@@ -7,8 +7,10 @@ import {
   GRAPH_KINDS_WAVE1,
   GRAPH_KINDS_WAVE2,
   type GraphKindSpec,
+  isPseudoKind,
   kindIsClusterScoped,
   objectKey,
+  resourceIsListable,
   resourceIsWatchable,
 } from "../constants/resources";
 import type {
@@ -27,6 +29,7 @@ import {
   saveExtraNamespaces,
 } from "../utils/namespaceName";
 import { countedPodNodeName, nodeStatusText } from "../utils/nodeStatus";
+import { longhornNodeStatusLabel, longhornVolumeStatusLabel, isCoreNode } from "../utils/longhornStatus";
 import { matchesLabelSelector, matchesOwnerFilter } from "../utils/relations";
 
 const CONNECT_TIMEOUT_MS = 30_000;
@@ -76,6 +79,17 @@ function isTransientWatchError(err: string): boolean {
   return /error reading a body from connection|connection reset|broken pipe|connection closed|unexpected eof|timed out|os error 54|os error 32|error decoding response body/i.test(
     err,
   );
+}
+
+/** List-only APIs (metrics.k8s.io) fail kube watch; the snapshot list is enough. */
+function isUnsupportedWatchError(err: string): boolean {
+  return /no metadata\.resourceVersion|does resource support watch|does not support watch/i.test(
+    err,
+  );
+}
+
+function shouldSuppressWatchError(err: string): boolean {
+  return isTransientWatchError(err) || isUnsupportedWatchError(err);
 }
 
 /** Match overview segment labels to live objects (mirrors Rust overview cards). */
@@ -180,8 +194,20 @@ function matchesStatusFilter(obj: K8sObject, kind: string, label: string): boole
   }
 
   if (kind === "Node") {
-    const text = nodeStatusText(obj as unknown as Record<string, unknown>);
-    return text.split(/\s+/).includes(label);
+    // Core Node vs Longhorn Node CR — only use kubelet status for v1.
+    const apiVersion = (obj.apiVersion as string) || "";
+    if (!apiVersion || apiVersion === "v1") {
+      const text = nodeStatusText(obj as unknown as Record<string, unknown>);
+      return text.split(/\s+/).includes(label);
+    }
+    return longhornNodeStatusLabel(obj as unknown as Record<string, unknown>).text === label;
+  }
+
+  if (kind === "Volume") {
+    const apiVersion = (obj.apiVersion as string) || "";
+    if (apiVersion.startsWith("longhorn.io/")) {
+      return longhornVolumeStatusLabel(obj as unknown as Record<string, unknown>).text === label;
+    }
   }
 
   // Fallback: phase or ready/replicas string contains label
@@ -270,7 +296,7 @@ function createClusterStore() {
       watchErrorUnlisten = await listen<WatchErrorPayload>("k8s://watch-error", (ev) => {
         const payload = ev.payload;
         if (visualizeNamespace()) return;
-        if (isTransientWatchError(payload.error || "")) return;
+        if (shouldSuppressWatchError(payload.error || "")) return;
         const ctx = selectedContext();
         const sel = selectedKind();
         if (
@@ -762,12 +788,12 @@ function createClusterStore() {
     const { apiVersion, kind } = selectedKind();
     lastWatchErrorKey = "";
     setError(null);
-    if (kind !== "Node") {
+    if (!isCoreNode(kind, apiVersion)) {
       await stopNodePodSidecars(ctx);
     }
     await stopListWatches(ctx);
     if (generation !== listWatchGeneration) return;
-    if (kind === "Overview") {
+    if (isPseudoKind(kind)) {
       finishListLoading(generation);
       return;
     }
@@ -783,13 +809,14 @@ function createClusterStore() {
     const discovered = (apiResources[ctx] || []).find(
       (r) => r.kind === kind && r.apiVersion === apiVersion,
     );
-    if (discovered && !resourceIsWatchable(discovered)) {
+    if (discovered && !resourceIsListable(discovered)) {
       setError(
         `${kind} cannot be listed or watched. Kubernetes only allows creating this resource.`,
       );
       finishListLoading(generation);
       return;
     }
+    const canWatch = !discovered || resourceIsWatchable(discovered);
 
     pendingListBuckets = new Set(nss.map((ns) => bucketKey(ctx, apiVersion, kind, ns)));
 
@@ -807,10 +834,25 @@ function createClusterStore() {
           } catch (listErr) {
             if (generation !== listWatchGeneration) return;
             setResources(key, { byUid: {}, order: [] });
+            if (!canWatch) {
+              markListBucketReady(key);
+              setError(
+                formatWatchError({
+                  context: ctx,
+                  apiVersion,
+                  kind,
+                  namespace,
+                  error: String(listErr),
+                }),
+              );
+              return;
+            }
             console.warn("listResourcesOnce failed, waiting for watch", key, listErr);
           }
 
           if (generation !== listWatchGeneration) return;
+          if (!canWatch) return;
+
           const watchKey = await api.startResourceWatch(ctx, apiVersion, kind, namespace);
           if (generation !== listWatchGeneration) {
             try {
@@ -824,6 +866,7 @@ function createClusterStore() {
         } catch (e) {
           if (generation !== listWatchGeneration) return;
           markListBucketReady(key);
+          if (shouldSuppressWatchError(String(e))) return;
           setError(
             formatWatchError({
               context: ctx,
@@ -842,7 +885,7 @@ function createClusterStore() {
     }
 
     // Pod counts for the Node column must not block first paint.
-    if (kind === "Node" && generation === listWatchGeneration) {
+    if (isCoreNode(kind, apiVersion) && generation === listWatchGeneration) {
       void syncNodePodSidecars(ctx);
     }
   }
@@ -851,7 +894,7 @@ function createClusterStore() {
     const ctx = selectedContext();
     if (!ctx) return;
     const { apiVersion, kind } = selectedKind();
-    if (kind === "Overview") return;
+    if (isPseudoKind(kind)) return;
     if (kind === "Namespace" && namespaceAccess[ctx]?.restricted) return;
     const nss = namespacesToWatch(ctx, kind, apiVersion);
     const generation = ++listRefreshGeneration;
@@ -863,7 +906,7 @@ function createClusterStore() {
         namespace: ns === "*" ? null : ns,
       }),
     );
-    if (kind === "Node") {
+    if (isCoreNode(kind, apiVersion)) {
       for (const bucket of Object.keys(nodePodSidecarKeys)) {
         if (!nodePodSidecarKeys[bucket] || !bucket.startsWith(`${ctx}|`)) continue;
         const parts = bucket.split("|");
@@ -902,6 +945,29 @@ function createClusterStore() {
       }
     }
     return counts;
+  }
+
+  /** Non-terminated pods bound to a node (from node pod sidecar watches). */
+  function podsOnNode(nodeName: string): K8sObject[] {
+    if (!nodeName) return [];
+    const out: K8sObject[] = [];
+    for (const key of Object.keys(nodePodSidecarKeys)) {
+      if (!nodePodSidecarKeys[key]) continue;
+      const bucket = resources[key];
+      if (!bucket) continue;
+      for (const uid of bucket.order) {
+        const obj = bucket.byUid[uid];
+        if (!obj) continue;
+        if (countedPodNodeName(obj as unknown as Record<string, unknown>) !== nodeName) continue;
+        out.push(obj);
+      }
+    }
+    out.sort((a, b) => {
+      const na = `${a.metadata?.namespace || ""}/${a.metadata?.name || ""}`;
+      const nb = `${b.metadata?.namespace || ""}/${b.metadata?.name || ""}`;
+      return na.localeCompare(nb);
+    });
+    return out;
   }
 
   function nodePodCountsReady(): boolean {
@@ -1044,6 +1110,7 @@ function createClusterStore() {
     refreshCurrent,
     currentObjects,
     podCountByNodeName,
+    podsOnNode,
     nodePodCountsReady,
     selectedObject,
     bucketKey,
