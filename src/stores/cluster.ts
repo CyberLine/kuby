@@ -13,6 +13,7 @@ import {
   resourceIsListable,
   resourceIsWatchable,
 } from "../constants/resources";
+import { DEMO_NAMESPACES, demoContexts, demoStatus, isDemoMode } from "../fixtures/demo";
 import type {
   ClusterStatus,
   ContextInfo,
@@ -386,12 +387,38 @@ function createClusterStore() {
     }
   }
 
+  function hydrateDemo() {
+    const list = demoContexts();
+    const names = list.map((c) => c.name);
+    const selected = list.find((c) => c.current)?.name || names[0] || "";
+    setContexts(list);
+    setActiveContexts(names);
+    setSelectedContext(selected);
+    for (const ctx of names) {
+      setStatuses(ctx, demoStatus(ctx));
+      setNamespaceAccess(ctx, { restricted: false, defaultNamespace: "default" });
+      setNamespaces(ctx, [...DEMO_NAMESPACES]);
+      selectNamespaces(ctx, ["*"]);
+    }
+    setSelectedKind({ apiVersion: "kuby.io/overview", kind: "Overview" });
+    setError(null);
+  }
+
   async function refreshContexts() {
+    if (isDemoMode()) {
+      hydrateDemo();
+      return;
+    }
     const list = await api.listContexts();
     setContexts(list);
   }
 
   async function connect(context: string) {
+    if (isDemoMode()) {
+      hydrateDemo();
+      setSelectedContext(context);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -449,6 +476,7 @@ function createClusterStore() {
   }
 
   async function refreshNamespaces(context?: string) {
+    if (isDemoMode()) return;
     const ctx = context || selectedContext();
     if (!ctx) return;
     setNamespacesLoading(true);
@@ -559,6 +587,14 @@ function createClusterStore() {
   }
 
   async function disconnect(context: string) {
+    if (isDemoMode()) {
+      const active = activeContexts().filter((c) => c !== context);
+      setActiveContexts(active);
+      if (selectedContext() === context) {
+        setSelectedContext(active[0] || "");
+      }
+      return;
+    }
     if (selectedContext() === context && visualizeNamespace()) {
       await stopGraphWatches();
     }
@@ -1106,6 +1142,7 @@ function createClusterStore() {
     loading,
     listLoading,
     namespacesLoading,
+    hydrateDemo,
     refreshContexts,
     refreshNamespaces,
     connect,

@@ -673,6 +673,28 @@ input,
   box-shadow: var(--menu-shadow);
 }
 
+.status-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.status-progress {
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  overflow: hidden;
+}
+
+.status-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width 120ms linear;
+}
+
 .banner span {
   min-width: 0;
   overflow-wrap: anywhere;

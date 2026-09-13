@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { demoWorkloadOverview, isDemoMode } from "../fixtures/demo";
 import type {
   ClusterStatus,
   ContextInfo,
@@ -148,11 +149,13 @@ export const api = {
   getNodeStats: (context: string, name: string) =>
     invoke<NodeStats>("get_node_stats", { context, name }),
   getWorkloadOverview: (context: string, namespaces: string[], usageThreshold?: number) =>
-    invoke<WorkloadOverview>("get_workload_overview", {
-      context,
-      namespaces,
-      usageThreshold,
-    }),
+    isDemoMode()
+      ? Promise.resolve(demoWorkloadOverview(context))
+      : invoke<WorkloadOverview>("get_workload_overview", {
+          context,
+          namespaces,
+          usageThreshold,
+        }),
   getLonghornOverview: (context: string) =>
     invoke<LonghornOverview>("get_longhorn_overview", { context }),
   diffResources: (leftYaml: string, rightYaml: string) =>

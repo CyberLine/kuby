@@ -2,6 +2,8 @@
 
 Native multi-cluster Kubernetes desktop client built with **Tauri 2**, **Rust (`kube-rs`)**, and **SolidJS**.
 
+![Workload overview with cluster sidebar, status cards, warnings, restarts, and resource usage](docs/images/overview.png)
+
 ## Features
 
 - Multi-cluster kubeconfig contexts (`KUBECONFIG` honored)

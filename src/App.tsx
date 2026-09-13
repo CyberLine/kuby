@@ -11,7 +11,7 @@ import {
 } from "solid-js";
 import { confirmAction } from "./api/confirm";
 import { api } from "./api/tauri";
-import { checkForUpdates } from "./api/updater";
+import { checkForUpdates, formatUpdateProgress, updateProgressPercent } from "./api/updater";
 import logo from "./assets/logo.png";
 import { AboutDialog } from "./components/AboutDialog";
 import { CodeEditor } from "./components/CodeEditor";
@@ -56,6 +56,7 @@ import {
   objectNamespace,
   resourceIsListable,
 } from "./constants/resources";
+import { isDemoMode } from "./fixtures/demo";
 import { clusterStore } from "./stores/cluster";
 import { telemetryStore } from "./stores/telemetry";
 import type {
@@ -190,6 +191,7 @@ function App() {
   const [yaml, setYaml] = createSignal("");
   const [statusMsg, setStatusMsg] = createSignal("");
   const [statusIsError, setStatusIsError] = createSignal(false);
+  const [statusProgress, setStatusProgress] = createSignal<number | null>(null);
   const [diffHunks, setDiffHunks] = createSignal<DiffHunk[]>([]);
   const [diffBase, setDiffBase] = createSignal("");
   const [metrics, setMetrics] = createSignal<PodMetrics[]>([]);
@@ -201,7 +203,7 @@ function App() {
   const [showAllApis, setShowAllApis] = createSignal(false);
   const [collapsedNavGroups, setCollapsedNavGroups] = createSignal(readCollapsedNavGroups());
   const [aggMode, setAggMode] = createSignal(false);
-  const [showWelcome, setShowWelcome] = createSignal(true);
+  const [showWelcome, setShowWelcome] = createSignal(!isDemoMode());
   const [showAbout, setShowAbout] = createSignal(false);
   const [connectingContext, setConnectingContext] = createSignal<string | null>(null);
   const [bootError, setBootError] = createSignal<string | null>(null);
@@ -231,18 +233,58 @@ function App() {
   let listColResizeStartX = 0;
   let listColResizeStartW = 0;
 
-  function showStatus(msg: string, isError = false, autoHideMs = 4000) {
+  function showStatus(
+    msg: string,
+    isError = false,
+    autoHideMs = 4000,
+    progress: number | null = null,
+  ) {
     setStatusIsError(isError);
     setStatusMsg(msg);
+    setStatusProgress(progress);
     if (statusTimer) window.clearTimeout(statusTimer);
     if (autoHideMs > 0) {
-      statusTimer = window.setTimeout(() => setStatusMsg(""), autoHideMs);
+      statusTimer = window.setTimeout(() => {
+        setStatusMsg("");
+        setStatusProgress(null);
+      }, autoHideMs);
     }
   }
 
   function dismissStatus() {
     if (statusTimer) window.clearTimeout(statusTimer);
     setStatusMsg("");
+    setStatusProgress(null);
+  }
+
+  async function runUpdateCheck() {
+    const result = await checkForUpdates({
+      confirmInstall: ({ currentVersion, version }) =>
+        confirmAction(
+          `Kuby ${version} is available (you have ${currentVersion}).\n\nDownload and install now? You will need to restart afterwards.`,
+          "Update Kuby",
+        ),
+      onProgress: (progress) => {
+        showStatus(formatUpdateProgress(progress), false, 0, updateProgressPercent(progress));
+      },
+    });
+    switch (result.status) {
+      case "busy":
+        showStatus("Already checking for updates…");
+        break;
+      case "up-to-date":
+        showStatus("Up to date");
+        break;
+      case "skipped":
+        showStatus(`Skipped update to ${result.version}`);
+        break;
+      case "installed":
+        showStatus(`Installed ${result.version}. Restart Kuby to apply.`, false, 0);
+        break;
+      case "error":
+        showStatus(result.message, true, 0);
+        break;
+    }
   }
 
   function applyDetailWidth(px: number) {
@@ -345,6 +387,10 @@ function App() {
   }
 
   onMount(async () => {
+    if (isDemoMode()) {
+      store.hydrateDemo();
+      return;
+    }
     try {
       await store.refreshContexts();
     } catch (e) {
@@ -383,7 +429,7 @@ function App() {
       .then(keep)
       .catch(() => {});
     void listen("check-updates", () => {
-      void checkForUpdates().then((msg) => showStatus(msg));
+      void runUpdateCheck();
     })
       .then(keep)
       .catch(() => {});
@@ -2846,7 +2892,21 @@ function App() {
       </Show>
       <Show when={statusMsg()}>
         <div class={`banner status-toast ${statusIsError() ? "err" : ""}`}>
-          <span>{statusMsg()}</span>
+          <div class="status-toast-body">
+            <span>{statusMsg()}</span>
+            <Show when={statusProgress() !== null}>
+              <div
+                class="status-progress"
+                role="progressbar"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={statusProgress() ?? 0}
+                aria-label="Update download"
+              >
+                <div class="status-progress-bar" style={{ width: `${statusProgress() ?? 0}%` }} />
+              </div>
+            </Show>
+          </div>
           <button class="banner-close" onClick={() => dismissStatus()} title="Dismiss">
             ×
           </button>
@@ -2854,7 +2914,7 @@ function App() {
       </Show>
       <AboutDialog open={showAbout()} onClose={() => setShowAbout(false)} />
       <TelemetryDialog
-        open={telemetryStore.consent() === null}
+        open={!isDemoMode() && telemetryStore.consent() === null}
         onAllow={() => telemetryStore.setConsent(true)}
         onDecline={() => telemetryStore.setConsent(false)}
       />
