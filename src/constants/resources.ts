@@ -156,16 +156,6 @@ export function kindHasNamespaceColumn(kind: string): boolean {
   return !kindIsClusterScoped(kind);
 }
 
-/** CPU/Mem is only populated for pods and nodes. */
-export function kindHasMetricsColumn(kind: string): boolean {
-  return kind === "Pod" || kind === "Node";
-}
-
-/** Running pods vs allocatable pod limit is only shown on nodes. */
-export function kindHasPodsColumn(kind: string): boolean {
-  return kind === "Node";
-}
-
 /** Node binding (spec.nodeName) is only populated for pods. */
 export function kindHasNodeColumn(kind: string): boolean {
   return kind === "Pod";

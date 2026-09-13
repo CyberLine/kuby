@@ -127,7 +127,10 @@ pub async fn get_overview(manager: &ClusterManager, context: &str) -> Result<Lon
     Ok(overview)
 }
 
-fn prefer_api_version(resources: &[crate::k8s::discovery::DiscoveredResource], kind: &str) -> Option<String> {
+fn prefer_api_version(
+    resources: &[crate::k8s::discovery::DiscoveredResource],
+    kind: &str,
+) -> Option<String> {
     let matches: Vec<_> = resources
         .iter()
         .filter(|r| r.group == "longhorn.io" && r.kind == kind)
@@ -150,7 +153,10 @@ async fn list_dynamic(
     api_version: &str,
     kind: &str,
 ) -> Vec<DynamicObject> {
-    let (api, _) = match manager.resolve_api(context, api_version, kind, Some("*")).await {
+    let (api, _) = match manager
+        .resolve_api(context, api_version, kind, Some("*"))
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, api_version, kind, "longhorn resolve failed");
@@ -384,10 +390,7 @@ fn storage_stats(volumes: &[DynamicObject], nodes: &[DynamicObject]) -> Longhorn
             .data
             .pointer("/status/diskStatus")
             .and_then(|v| v.as_object());
-        let spec_disks = node
-            .data
-            .pointer("/spec/disks")
-            .and_then(|v| v.as_object());
+        let spec_disks = node.data.pointer("/spec/disks").and_then(|v| v.as_object());
 
         if let Some(disks) = disks {
             for (name, disk) in disks {
@@ -397,18 +400,9 @@ fn storage_stats(volumes: &[DynamicObject], nodes: &[DynamicObject]) -> Longhorn
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
 
-                let max = disk
-                    .get("storageMaximum")
-                    .and_then(json_i64)
-                    .unwrap_or(0);
-                let avail = disk
-                    .get("storageAvailable")
-                    .and_then(json_i64)
-                    .unwrap_or(0);
-                let sched = disk
-                    .get("storageScheduled")
-                    .and_then(json_i64)
-                    .unwrap_or(0);
+                let max = disk.get("storageMaximum").and_then(json_i64).unwrap_or(0);
+                let avail = disk.get("storageAvailable").and_then(json_i64).unwrap_or(0);
+                let sched = disk.get("storageScheduled").and_then(json_i64).unwrap_or(0);
                 let res = spec_disks
                     .and_then(|sd| sd.get(name))
                     .and_then(|d| d.get("storageReserved"))

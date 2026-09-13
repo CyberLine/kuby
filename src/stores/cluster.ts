@@ -24,12 +24,16 @@ import type {
   WatchEventPayload,
 } from "../types";
 import {
+  isCoreNode,
+  longhornNodeStatusLabel,
+  longhornVolumeStatusLabel,
+} from "../utils/longhornStatus";
+import {
   isValidNamespaceName,
   loadExtraNamespaces,
   saveExtraNamespaces,
 } from "../utils/namespaceName";
 import { countedPodNodeName, nodeStatusText } from "../utils/nodeStatus";
-import { longhornNodeStatusLabel, longhornVolumeStatusLabel, isCoreNode } from "../utils/longhornStatus";
 import { matchesLabelSelector, matchesOwnerFilter } from "../utils/relations";
 
 const CONNECT_TIMEOUT_MS = 30_000;

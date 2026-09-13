@@ -2,10 +2,10 @@ import { createMemo, createSignal, For, Show } from "solid-js";
 import type { K8sObject, PodMetrics } from "../types";
 import {
   formatContainerPorts,
-  podContainerGroups,
-  readyLabel,
   type PodContainerKind,
   type PodContainerRow,
+  podContainerGroups,
+  readyLabel,
 } from "../utils/podContainers";
 
 type Props = {
@@ -31,9 +31,7 @@ function ContainerTile(props: { row: PodContainerRow }) {
       <dl class="pod-container-tile-meta">
         <div>
           <dt>Restarts</dt>
-          <dd class="mono">
-            {props.row.restartCount == null ? "—" : props.row.restartCount}
-          </dd>
+          <dd class="mono">{props.row.restartCount == null ? "—" : props.row.restartCount}</dd>
         </div>
         <div>
           <dt>CPU</dt>
@@ -60,10 +58,7 @@ function ContainerTile(props: { row: PodContainerRow }) {
 
 export function PodContainersSection(props: Props) {
   const groups = createMemo(() =>
-    podContainerGroups(
-      props.pod as unknown as Record<string, unknown>,
-      props.metrics?.containers,
-    ),
+    podContainerGroups(props.pod as unknown as Record<string, unknown>, props.metrics?.containers),
   );
 
   /** Collapsed group kinds; empty = all expanded. Init starts collapsed. */

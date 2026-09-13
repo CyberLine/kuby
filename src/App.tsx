@@ -45,8 +45,8 @@ import {
 } from "./constants/actions";
 import {
   ageFromTimestamp,
-  clusterHasLonghorn,
   CURATED_NAV,
+  clusterHasLonghorn,
   isPseudoKind,
   kindHasNamespaceColumn,
   kindHasNodeColumn,
@@ -1023,7 +1023,8 @@ function App() {
 
   async function runNodeAction(action: NodeAction, keys: string[]) {
     setCtxMenu(null);
-    if (!canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion) || !keys.length) return;
+    if (!canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion) || !keys.length)
+      return;
     const objs = objectsByKeys(keys);
     if (!objs.length) return;
 
@@ -1846,9 +1847,7 @@ function App() {
 
             <div
               class={`content ${
-                !menuLocked() &&
-                !isPseudoKind(store.selectedKind().kind) &&
-                store.selectedObject()
+                !menuLocked() && !isPseudoKind(store.selectedKind().kind) && store.selectedObject()
                   ? "with-detail"
                   : ""
               }`}
@@ -1869,622 +1868,746 @@ function App() {
                             fallback={
                               <div class="resource-layout">
                                 <section class="list-pane">
-                          <Show when={checkedKeys().size > 0}>
-                            <div class="selection-bar">
-                              <span>{checkedKeys().size} selected</span>
-                              <div class="selection-bar-actions">
-                                <Show when={canDeleteKind(store.selectedKind().kind)}>
-                                  <button
-                                    class="btn danger"
-                                    onClick={() => void deleteKeys([...checkedKeys()])}
-                                  >
-                                    Delete
-                                  </button>
-                                </Show>
-                                <Show when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}>
-                                  <Show when={selectionHasSchedulableNode([...checkedKeys()])}>
-                                    <button
-                                      class="btn"
-                                      onClick={() =>
-                                        void runNodeAction("cordon", [...checkedKeys()])
-                                      }
-                                    >
-                                      Cordon
-                                    </button>
-                                  </Show>
-                                  <Show when={selectionHasCordonedNode([...checkedKeys()])}>
-                                    <button
-                                      class="btn"
-                                      onClick={() =>
-                                        void runNodeAction("uncordon", [...checkedKeys()])
-                                      }
-                                    >
-                                      Uncordon
-                                    </button>
-                                  </Show>
-                                  <button
-                                    class="btn"
-                                    onClick={() => void runNodeAction("drain", [...checkedKeys()])}
-                                  >
-                                    Drain
-                                  </button>
-                                </Show>
-                                <button class="btn ghost" onClick={() => clearChecked()}>
-                                  Clear
-                                </button>
-                              </div>
-                            </div>
-                          </Show>
-                          <div class="list-body" aria-busy={store.listLoading()}>
-                            <VirtualList
-                              items={sortedObjects()}
-                              itemHeight={36}
-                              class="resource-list"
-                              header={
-                                <div
-                                  class="row head"
-                                  style={{ "grid-template-columns": listGridTemplate() }}
-                                >
-                                  <label class="row-check" title="Select all">
-                                    <input
-                                      type="checkbox"
-                                      checked={
-                                        sortedObjects().length > 0 &&
-                                        sortedObjects().every((o) =>
-                                          checkedKeys().has(objectKey(o)),
-                                        )
-                                      }
-                                      onChange={(e) => {
-                                        if (e.currentTarget.checked) {
-                                          setChecked(
-                                            new Set(sortedObjects().map((o) => objectKey(o))),
-                                          );
-                                        } else {
-                                          clearChecked();
-                                        }
-                                      }}
-                                    />
-                                  </label>
-                                  <For each={listVisibleColumns()}>
-                                    {(id) => (
-                                      <div class="col-head">
-                                        <button
-                                          type="button"
-                                          class={`sort-btn ${sortKey() === id ? "active" : ""}`}
-                                          onClick={() => toggleSort(id)}
-                                        >
-                                          {LIST_COLUMN_META[id].label}
-                                          {sortIndicator(id)}
-                                        </button>
-                                        <div
-                                          class="col-resize"
-                                          role="separator"
-                                          aria-orientation="vertical"
-                                          aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
-                                          title="Drag to resize · double-click to reset"
-                                          onPointerDown={(e) => onListColResizePointerDown(id, e)}
-                                          onPointerMove={onListColResizePointerMove}
-                                          onPointerUp={onListColResizePointerUp}
-                                          onPointerCancel={endListColResize}
-                                          onLostPointerCapture={endListColResize}
-                                          onDblClick={(e) => onListColResizeDblClick(id, e)}
-                                        />
-                                      </div>
-                                    )}
-                                  </For>
-                                </div>
-                              }
-                              renderItem={(obj, index) => {
-                                const key = objectKey(obj);
-                                const name = objectName(obj);
-                                const ns = objectNamespace(obj) || "—";
-                                const node = podNodeName(obj) || "—";
-                                const labels = statusLabelsFor(obj);
-                                const phaseTitle = labels.map((l) => l.text).join(", ");
-                                return (
-                                  <div
-                                    class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
-                                      checkedKeys().has(key) ? "checked" : ""
-                                    }`}
-                                    style={{ "grid-template-columns": listGridTemplate() }}
-                                    onClick={(e) => onRowClick(obj, index, e)}
-                                    onContextMenu={(e) => onRowContextMenu(obj, index, e)}
-                                    role="button"
-                                    tabIndex={0}
-                                  >
-                                    <label
-                                      class="row-check"
-                                      onClick={(e) => e.stopPropagation()}
-                                      onDblClick={(e) => e.stopPropagation()}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={checkedKeys().has(key)}
-                                        onChange={() => {
-                                          toggleChecked(key);
-                                          setLastClickedIndex(index);
-                                        }}
-                                      />
-                                    </label>
-                                    <Show when={colVisible("name")}>
-                                      <span class="mono name-with-action" title={name}>
-                                        <span class="name-text">{name}</span>
-                                        <Show when={store.selectedKind().kind === "Namespace"}>
+                                  <Show when={checkedKeys().size > 0}>
+                                    <div class="selection-bar">
+                                      <span>{checkedKeys().size} selected</span>
+                                      <div class="selection-bar-actions">
+                                        <Show when={canDeleteKind(store.selectedKind().kind)}>
                                           <button
-                                            type="button"
-                                            class="btn ghost row-visualize"
-                                            title={`Visualize ${name}`}
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              void openVisualize(name);
-                                            }}
+                                            class="btn danger"
+                                            onClick={() => void deleteKeys([...checkedKeys()])}
                                           >
-                                            Visualize
+                                            Delete
                                           </button>
                                         </Show>
-                                      </span>
-                                    </Show>
-                                    <Show when={colVisible("namespace")}>
-                                      <span title={ns}>{ns}</span>
-                                    </Show>
-                                    <Show when={colVisible("node")}>
-                                      <span class="mono" title={node}>
-                                        {node}
-                                      </span>
-                                    </Show>
-                                    <Show when={colVisible("version")}>
-                                      <span class="status-labels">
                                         <Show
-                                          when={nodeKubeletVersion(obj)}
-                                          fallback={<span class="muted">—</span>}
-                                        >
-                                          {(v) => <span class="status-label muted">{v()}</span>}
-                                        </Show>
-                                      </span>
-                                    </Show>
-                                    <Show when={colVisible("status")}>
-                                      <span class="status-labels" title={phaseTitle}>
-                                        <For each={labels}>
-                                          {(label) => (
-                                            <span class={`status-label ${label.tone}`}>
-                                              {label.text}
-                                            </span>
+                                          when={canNodeAction(
+                                            store.selectedKind().kind,
+                                            store.selectedKind().apiVersion,
                                           )}
-                                        </For>
-                                      </span>
-                                    </Show>
-                                    <Show when={colVisible("pods")}>
-                                      <span
-                                        class="muted"
-                                        title="Running pods / allocatable pod limit"
-                                      >
-                                        {podsForNode(obj)}
-                                      </span>
-                                    </Show>
-                                    <Show when={colVisible("metrics")}>
-                                      <span class="muted">{metricFor(obj)}</span>
-                                    </Show>
-                                    <Show when={colVisible("age")}>
-                                      <span class="muted">
-                                        {ageFromTimestamp(
-                                          obj.metadata?.creationTimestamp as string,
-                                        )}
-                                      </span>
-                                    </Show>
-                                  </div>
-                                );
-                              }}
-                            />
-                            <Show when={store.listLoading() && !sortedObjects().length}>
-                              <div class="list-status">
-                                <LoadingSpinner label={`Loading ${store.selectedKind().kind}…`} />
-                              </div>
-                            </Show>
-                            <Show when={!store.listLoading() && !sortedObjects().length}>
-                              <div class="list-status">{emptyListMessage()}</div>
-                            </Show>
-                          </div>
-                        </section>
-
-                        <Show when={store.selectedObjectKey()}>
-                          <Show when={store.selectedObject()}>
-                            {(obj) => (
-                              <>
-                                <div
-                                  class="pane-splitter"
-                                  role="separator"
-                                  aria-orientation="vertical"
-                                  aria-label="Resize detail panel"
-                                  title="Drag to resize"
-                                  tabIndex={0}
-                                  onPointerDown={onSplitterPointerDown}
-                                  onPointerMove={onSplitterPointerMove}
-                                  onPointerUp={onSplitterPointerUp}
-                                  onPointerCancel={endDetailResize}
-                                  onLostPointerCapture={endDetailResize}
-                                  onDblClick={onSplitterDblClick}
-                                  onKeyDown={onSplitterKeyDown}
-                                />
-                                <section class="detail-pane" ref={detailPaneEl}>
-                                  <div class="detail-tabs">
-                                    <For each={detailTabs()}>
-                                      {(tab) => (
-                                        <button
-                                          class={`tab ${panel() === tab ? "active" : ""}`}
-                                          onClick={() => setPanel(tab)}
                                         >
-                                          {tab}
-                                        </button>
-                                      )}
-                                    </For>
-                                    <button
-                                      type="button"
-                                      class="pane-close"
-                                      title="Close"
-                                      aria-label="Close detail panel"
-                                      onClick={closeDetailPanel}
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
-
-                                  <div class="detail-actions">
-                                    <Show when={canScaleKind(store.selectedKind().kind)}>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        class="scale-input"
-                                        value={scaleReplicas()}
-                                        onInput={(e) =>
-                                          setScaleReplicas(Number(e.currentTarget.value))
-                                        }
-                                      />
-                                      <button class="btn" onClick={() => void doAction("scale")}>
-                                        Scale
-                                      </button>
-                                    </Show>
-                                    <Show when={canRestartKind(store.selectedKind().kind)}>
-                                      <button class="btn" onClick={() => void doAction("restart")}>
-                                        Restart
-                                      </button>
-                                    </Show>
-                                    <Show when={canRollbackDeployment(store.selectedKind().kind)}>
-                                      <button class="btn" onClick={() => void doRollback()}>
-                                        Rollback
-                                      </button>
-                                    </Show>
-                                    <Show
-                                      when={
-                                        store.selectedKind().kind === "ReplicaSet" &&
-                                        canRollbackReplicaSet(obj(), replicaSetCurrent())
-                                      }
-                                    >
-                                      <button
-                                        class="btn"
-                                        title="Roll the parent Deployment back to this ReplicaSet revision"
-                                        onClick={() => void doRollback(obj())}
-                                      >
-                                        Rollback to this revision
-                                      </button>
-                                    </Show>
-                                    <Show when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}>
-                                      <Show when={!isNodeUnschedulable(obj())}>
-                                        <button
-                                          class="btn"
-                                          onClick={() =>
-                                            void runNodeAction("cordon", [objectKey(obj())])
-                                          }
-                                        >
-                                          Cordon
-                                        </button>
-                                      </Show>
-                                      <Show when={isNodeUnschedulable(obj())}>
-                                        <button
-                                          class="btn"
-                                          onClick={() =>
-                                            void runNodeAction("uncordon", [objectKey(obj())])
-                                          }
-                                        >
-                                          Uncordon
-                                        </button>
-                                      </Show>
-                                      <button
-                                        class="btn"
-                                        onClick={() =>
-                                          void runNodeAction("drain", [objectKey(obj())])
-                                        }
-                                      >
-                                        Drain
-                                      </button>
-                                    </Show>
-                                    <Show when={selectedPodPorts().length > 0}>
-                                      <button class="btn" onClick={() => startPf()}>
-                                        Port-forward
-                                      </button>
-                                    </Show>
-                                  </div>
-
-                                  <Show when={panel() === "detail"}>
-                                    <div class="detail-body">
-                                      <h2>{objectName(obj())}</h2>
-                                      <Show
-                                        when={
-                                          groupRelations(
-                                            extractRelations(obj(), store.selectedKind().kind),
-                                          ).length
-                                        }
-                                      >
-                                        <section class="relations">
-                                          <h3>Related</h3>
-                                          <For
-                                            each={groupRelations(
-                                              extractRelations(obj(), store.selectedKind().kind),
-                                            )}
+                                          <Show
+                                            when={selectionHasSchedulableNode([...checkedKeys()])}
                                           >
-                                            {(group) => (
-                                              <div class="relation-group">
-                                                <div class="relation-group-title">
-                                                  {group.group}
-                                                </div>
-                                                <div class="relation-links">
-                                                  <For each={group.links}>
-                                                    {(link) => (
-                                                      <button
-                                                        type="button"
-                                                        class="relation-link"
-                                                        title={[
-                                                          link.kind,
-                                                          link.name,
-                                                          link.labelSelector &&
-                                                            Object.entries(link.labelSelector)
-                                                              .map(([k, v]) => `${k}=${v}`)
-                                                              .join(","),
-                                                          link.owner &&
-                                                            `owner ${link.owner.kind}/${link.owner.name}`,
-                                                        ]
-                                                          .filter(Boolean)
-                                                          .join(" · ")}
-                                                        onClick={() => openRelation(link)}
-                                                      >
-                                                        {link.title}
-                                                      </button>
-                                                    )}
-                                                  </For>
-                                                </div>
+                                            <button
+                                              class="btn"
+                                              onClick={() =>
+                                                void runNodeAction("cordon", [...checkedKeys()])
+                                              }
+                                            >
+                                              Cordon
+                                            </button>
+                                          </Show>
+                                          <Show when={selectionHasCordonedNode([...checkedKeys()])}>
+                                            <button
+                                              class="btn"
+                                              onClick={() =>
+                                                void runNodeAction("uncordon", [...checkedKeys()])
+                                              }
+                                            >
+                                              Uncordon
+                                            </button>
+                                          </Show>
+                                          <button
+                                            class="btn"
+                                            onClick={() =>
+                                              void runNodeAction("drain", [...checkedKeys()])
+                                            }
+                                          >
+                                            Drain
+                                          </button>
+                                        </Show>
+                                        <button class="btn ghost" onClick={() => clearChecked()}>
+                                          Clear
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </Show>
+                                  <div class="list-body" aria-busy={store.listLoading()}>
+                                    <VirtualList
+                                      items={sortedObjects()}
+                                      itemHeight={36}
+                                      class="resource-list"
+                                      header={
+                                        <div
+                                          class="row head"
+                                          style={{ "grid-template-columns": listGridTemplate() }}
+                                        >
+                                          <label class="row-check" title="Select all">
+                                            <input
+                                              type="checkbox"
+                                              checked={
+                                                sortedObjects().length > 0 &&
+                                                sortedObjects().every((o) =>
+                                                  checkedKeys().has(objectKey(o)),
+                                                )
+                                              }
+                                              onChange={(e) => {
+                                                if (e.currentTarget.checked) {
+                                                  setChecked(
+                                                    new Set(
+                                                      sortedObjects().map((o) => objectKey(o)),
+                                                    ),
+                                                  );
+                                                } else {
+                                                  clearChecked();
+                                                }
+                                              }}
+                                            />
+                                          </label>
+                                          <For each={listVisibleColumns()}>
+                                            {(id) => (
+                                              <div class="col-head">
+                                                <button
+                                                  type="button"
+                                                  class={`sort-btn ${sortKey() === id ? "active" : ""}`}
+                                                  onClick={() => toggleSort(id)}
+                                                >
+                                                  {LIST_COLUMN_META[id].label}
+                                                  {sortIndicator(id)}
+                                                </button>
+                                                <div
+                                                  class="col-resize"
+                                                  role="separator"
+                                                  aria-orientation="vertical"
+                                                  aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
+                                                  title="Drag to resize · double-click to reset"
+                                                  onPointerDown={(e) =>
+                                                    onListColResizePointerDown(id, e)
+                                                  }
+                                                  onPointerMove={onListColResizePointerMove}
+                                                  onPointerUp={onListColResizePointerUp}
+                                                  onPointerCancel={endListColResize}
+                                                  onLostPointerCapture={endListColResize}
+                                                  onDblClick={(e) => onListColResizeDblClick(id, e)}
+                                                />
                                               </div>
                                             )}
                                           </For>
-                                        </section>
-                                      </Show>
-                                      <Show when={store.selectedKind().kind === "Pod"}>
-                                        <PodContainersSection
-                                          pod={obj()}
-                                          metrics={podMetricsFor(
-                                            obj() as unknown as Record<string, unknown>,
-                                          )}
-                                        />
-                                      </Show>
-                                      <dl class="kv">
-                                        <dt>Kind</dt>
-                                        <dd>{String(obj().kind || store.selectedKind().kind)}</dd>
-                                        <Show when={listColumnCaps().namespace}>
-                                          <dt>Namespace</dt>
-                                          <dd>{objectNamespace(obj()) || "—"}</dd>
-                                        </Show>
-                                        <Show when={listColumnCaps().node}>
-                                          <dt>Node</dt>
-                                          <dd class="mono">{podNodeName(obj()) || "—"}</dd>
-                                        </Show>
-                                        <dt>UID</dt>
-                                        <dd class="mono">{objectKey(obj())}</dd>
-                                      </dl>
-                                      <section class="detail-block">
-                                        <h3>Labels</h3>
-                                        <Show
-                                          when={Object.keys(obj().metadata?.labels || {}).length}
-                                          fallback={<span class="muted">—</span>}
-                                        >
-                                          <table class="meta-table">
-                                            <thead>
-                                              <tr>
-                                                <th>Key</th>
-                                                <th>Value</th>
-                                              </tr>
-                                            </thead>
-                                            <tbody>
-                                              <For
-                                                each={Object.entries(obj().metadata?.labels || {})}
-                                              >
-                                                {([key, value]) => (
-                                                  <tr>
-                                                    <td class="mono">{key}</td>
-                                                    <td class="mono">{String(value)}</td>
-                                                  </tr>
-                                                )}
-                                              </For>
-                                            </tbody>
-                                          </table>
-                                        </Show>
-                                      </section>
-                                      <Show
-                                        when={
-                                          obj().status != null &&
-                                          typeof obj().status === "object" &&
-                                          Object.keys(obj().status as object).length > 0
-                                        }
-                                      >
-                                        <section class="detail-block">
-                                          <h3>Status</h3>
-                                          <div class="kv-json">
-                                            <CodeEditor
-                                              language="json"
-                                              readOnly
-                                              compact
-                                              value={JSON.stringify(obj().status, null, 2)}
-                                            />
-                                          </div>
-                                        </section>
-                                      </Show>
-                                    </div>
-                                  </Show>
-
-                                  <Show when={panel() === "data"}>
-                                    <ResourceDataEditor
-                                      context={store.selectedContext()}
-                                      apiVersion={
-                                        (obj().apiVersion as string) ||
-                                        store.selectedKind().apiVersion
+                                        </div>
                                       }
-                                      kind={(obj().kind as string) || store.selectedKind().kind}
-                                      namespace={objectNamespace(obj()) || null}
-                                      name={objectName(obj())}
-                                      objectId={objectKey(obj())}
-                                      data={resourceDataMap(obj())}
-                                      isSecret={isOpaqueSecret(obj(), store.selectedKind().kind)}
-                                      onStatus={showStatus}
-                                      onApplied={async () => {
-                                        await reloadCurrentList();
-                                        await reloadSelectedYaml();
+                                      renderItem={(obj, index) => {
+                                        const key = objectKey(obj);
+                                        const name = objectName(obj);
+                                        const ns = objectNamespace(obj) || "—";
+                                        const node = podNodeName(obj) || "—";
+                                        const labels = statusLabelsFor(obj);
+                                        const phaseTitle = labels.map((l) => l.text).join(", ");
+                                        return (
+                                          <div
+                                            class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
+                                              checkedKeys().has(key) ? "checked" : ""
+                                            }`}
+                                            style={{ "grid-template-columns": listGridTemplate() }}
+                                            onClick={(e) => onRowClick(obj, index, e)}
+                                            onContextMenu={(e) => onRowContextMenu(obj, index, e)}
+                                            role="button"
+                                            tabIndex={0}
+                                          >
+                                            <label
+                                              class="row-check"
+                                              onClick={(e) => e.stopPropagation()}
+                                              onDblClick={(e) => e.stopPropagation()}
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={checkedKeys().has(key)}
+                                                onChange={() => {
+                                                  toggleChecked(key);
+                                                  setLastClickedIndex(index);
+                                                }}
+                                              />
+                                            </label>
+                                            <Show when={colVisible("name")}>
+                                              <span class="mono name-with-action" title={name}>
+                                                <span class="name-text">{name}</span>
+                                                <Show
+                                                  when={store.selectedKind().kind === "Namespace"}
+                                                >
+                                                  <button
+                                                    type="button"
+                                                    class="btn ghost row-visualize"
+                                                    title={`Visualize ${name}`}
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      void openVisualize(name);
+                                                    }}
+                                                  >
+                                                    Visualize
+                                                  </button>
+                                                </Show>
+                                              </span>
+                                            </Show>
+                                            <Show when={colVisible("namespace")}>
+                                              <span title={ns}>{ns}</span>
+                                            </Show>
+                                            <Show when={colVisible("node")}>
+                                              <span class="mono" title={node}>
+                                                {node}
+                                              </span>
+                                            </Show>
+                                            <Show when={colVisible("version")}>
+                                              <span class="status-labels">
+                                                <Show
+                                                  when={nodeKubeletVersion(obj)}
+                                                  fallback={<span class="muted">—</span>}
+                                                >
+                                                  {(v) => (
+                                                    <span class="status-label muted">{v()}</span>
+                                                  )}
+                                                </Show>
+                                              </span>
+                                            </Show>
+                                            <Show when={colVisible("status")}>
+                                              <span class="status-labels" title={phaseTitle}>
+                                                <For each={labels}>
+                                                  {(label) => (
+                                                    <span class={`status-label ${label.tone}`}>
+                                                      {label.text}
+                                                    </span>
+                                                  )}
+                                                </For>
+                                              </span>
+                                            </Show>
+                                            <Show when={colVisible("pods")}>
+                                              <span
+                                                class="muted"
+                                                title="Running pods / allocatable pod limit"
+                                              >
+                                                {podsForNode(obj)}
+                                              </span>
+                                            </Show>
+                                            <Show when={colVisible("metrics")}>
+                                              <span class="muted">{metricFor(obj)}</span>
+                                            </Show>
+                                            <Show when={colVisible("age")}>
+                                              <span class="muted">
+                                                {ageFromTimestamp(
+                                                  obj.metadata?.creationTimestamp as string,
+                                                )}
+                                              </span>
+                                            </Show>
+                                          </div>
+                                        );
                                       }}
                                     />
-                                  </Show>
-
-                                  <Show when={panel() === "yaml"}>
-                                    <div class="yaml-wrap">
-                                      <div class="yaml-toolbar">
-                                        <button class="btn" onClick={() => applyYaml()}>
-                                          Apply
-                                        </button>
-                                        <button class="btn ghost" onClick={() => runDiff()}>
-                                          Diff vs loaded
-                                        </button>
+                                    <Show when={store.listLoading() && !sortedObjects().length}>
+                                      <div class="list-status">
+                                        <LoadingSpinner
+                                          label={`Loading ${store.selectedKind().kind}…`}
+                                        />
                                       </div>
-                                      <CodeEditor
-                                        language="yaml"
-                                        value={yaml()}
-                                        onChange={setYaml}
-                                      />
-                                    </div>
-                                  </Show>
+                                    </Show>
+                                    <Show when={!store.listLoading() && !sortedObjects().length}>
+                                      <div class="list-status">{emptyListMessage()}</div>
+                                    </Show>
+                                  </div>
+                                </section>
 
-                                  <Show when={panel() === "logs"}>
-                                    <LogViewer
-                                      context={store.selectedContext()}
-                                      namespace={objectNamespace(obj())}
-                                      pod={
-                                        store.selectedKind().kind === "Pod" ? objectName(obj()) : ""
-                                      }
-                                      containers={
-                                        store.selectedKind().kind === "Pod"
-                                          ? podContainerNames(obj())
-                                          : []
-                                      }
-                                      aggregated={aggMode()}
-                                      pods={
-                                        aggMode()
-                                          ? objects()
-                                              .filter(() => store.selectedKind().kind === "Pod")
-                                              .slice(0, 20)
-                                              .map((p) => ({
-                                                context: store.selectedContext(),
-                                                namespace: objectNamespace(p),
-                                                pod: objectName(p),
-                                              }))
-                                          : []
-                                      }
-                                    />
-                                  </Show>
-
-                                  <Show when={panel() === "exec"}>
-                                    <ExecTerminal
-                                      context={store.selectedContext()}
-                                      namespace={objectNamespace(obj())}
-                                      pod={objectName(obj())}
-                                      containers={podContainerNames(obj())}
-                                    />
-                                  </Show>
-
-                                  <Show when={panel() === "diff"}>
-                                    <div class="diff-view">
-                                      <For each={diffHunks()}>
-                                        {(h) => <div class={`diff-line ${h.tag}`}>{h.value}</div>}
-                                      </For>
-                                    </div>
-                                  </Show>
-
-                                  <Show when={panel() === "portforward"}>
-                                    <div class="pf-panel">
-                                      <div class="pf-form">
-                                        <label>
-                                          Local
-                                          <input
-                                            type="number"
-                                            value={localPort()}
-                                            onInput={(e) =>
-                                              setLocalPort(Number(e.currentTarget.value))
-                                            }
-                                          />
-                                        </label>
-                                        <label>
-                                          Remote
-                                          <select
-                                            value={String(remotePort())}
-                                            onChange={(e) =>
-                                              setRemotePort(Number(e.currentTarget.value))
-                                            }
-                                          >
-                                            <For each={selectedPodPorts()}>
-                                              {(p) => (
-                                                <option value={String(p.port)}>
-                                                  {formatPodPort(p)}
-                                                </option>
+                                <Show when={store.selectedObjectKey()}>
+                                  <Show when={store.selectedObject()}>
+                                    {(obj) => (
+                                      <>
+                                        <div
+                                          class="pane-splitter"
+                                          role="separator"
+                                          aria-orientation="vertical"
+                                          aria-label="Resize detail panel"
+                                          title="Drag to resize"
+                                          tabIndex={0}
+                                          onPointerDown={onSplitterPointerDown}
+                                          onPointerMove={onSplitterPointerMove}
+                                          onPointerUp={onSplitterPointerUp}
+                                          onPointerCancel={endDetailResize}
+                                          onLostPointerCapture={endDetailResize}
+                                          onDblClick={onSplitterDblClick}
+                                          onKeyDown={onSplitterKeyDown}
+                                        />
+                                        <section class="detail-pane" ref={detailPaneEl}>
+                                          <div class="detail-tabs">
+                                            <For each={detailTabs()}>
+                                              {(tab) => (
+                                                <button
+                                                  class={`tab ${panel() === tab ? "active" : ""}`}
+                                                  onClick={() => setPanel(tab)}
+                                                >
+                                                  {tab}
+                                                </button>
                                               )}
                                             </For>
-                                          </select>
-                                        </label>
-                                        <button class="btn" onClick={() => startPf()}>
-                                          Start
-                                        </button>
-                                        <Show when={pf()}>
-                                          {(info) => (
                                             <button
-                                              class="btn danger"
-                                              onClick={async () => {
-                                                await api.stopPortForward(
-                                                  info().context,
-                                                  info().id,
-                                                );
-                                                setPf(null);
-                                              }}
+                                              type="button"
+                                              class="pane-close"
+                                              title="Close"
+                                              aria-label="Close detail panel"
+                                              onClick={closeDetailPanel}
                                             >
-                                              Stop :{info().localPort}
+                                              ×
                                             </button>
-                                          )}
-                                        </Show>
-                                      </div>
-                                      <Show when={pf()}>
-                                        {(info) => (
-                                          <p>
-                                            Forwarding{" "}
-                                            <code>
-                                              localhost:{info().localPort} → {info().pod}:
-                                              {info().remotePort}
-                                            </code>
-                                          </p>
-                                        )}
-                                      </Show>
-                                    </div>
+                                          </div>
+
+                                          <div class="detail-actions">
+                                            <Show when={canScaleKind(store.selectedKind().kind)}>
+                                              <input
+                                                type="number"
+                                                min="0"
+                                                class="scale-input"
+                                                value={scaleReplicas()}
+                                                onInput={(e) =>
+                                                  setScaleReplicas(Number(e.currentTarget.value))
+                                                }
+                                              />
+                                              <button
+                                                class="btn"
+                                                onClick={() => void doAction("scale")}
+                                              >
+                                                Scale
+                                              </button>
+                                            </Show>
+                                            <Show when={canRestartKind(store.selectedKind().kind)}>
+                                              <button
+                                                class="btn"
+                                                onClick={() => void doAction("restart")}
+                                              >
+                                                Restart
+                                              </button>
+                                            </Show>
+                                            <Show
+                                              when={canRollbackDeployment(
+                                                store.selectedKind().kind,
+                                              )}
+                                            >
+                                              <button class="btn" onClick={() => void doRollback()}>
+                                                Rollback
+                                              </button>
+                                            </Show>
+                                            <Show
+                                              when={
+                                                store.selectedKind().kind === "ReplicaSet" &&
+                                                canRollbackReplicaSet(obj(), replicaSetCurrent())
+                                              }
+                                            >
+                                              <button
+                                                class="btn"
+                                                title="Roll the parent Deployment back to this ReplicaSet revision"
+                                                onClick={() => void doRollback(obj())}
+                                              >
+                                                Rollback to this revision
+                                              </button>
+                                            </Show>
+                                            <Show
+                                              when={canNodeAction(
+                                                store.selectedKind().kind,
+                                                store.selectedKind().apiVersion,
+                                              )}
+                                            >
+                                              <Show when={!isNodeUnschedulable(obj())}>
+                                                <button
+                                                  class="btn"
+                                                  onClick={() =>
+                                                    void runNodeAction("cordon", [objectKey(obj())])
+                                                  }
+                                                >
+                                                  Cordon
+                                                </button>
+                                              </Show>
+                                              <Show when={isNodeUnschedulable(obj())}>
+                                                <button
+                                                  class="btn"
+                                                  onClick={() =>
+                                                    void runNodeAction("uncordon", [
+                                                      objectKey(obj()),
+                                                    ])
+                                                  }
+                                                >
+                                                  Uncordon
+                                                </button>
+                                              </Show>
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runNodeAction("drain", [objectKey(obj())])
+                                                }
+                                              >
+                                                Drain
+                                              </button>
+                                            </Show>
+                                            <Show when={selectedPodPorts().length > 0}>
+                                              <button class="btn" onClick={() => startPf()}>
+                                                Port-forward
+                                              </button>
+                                            </Show>
+                                          </div>
+
+                                          <Show when={panel() === "detail"}>
+                                            <div class="detail-body">
+                                              <h2>{objectName(obj())}</h2>
+                                              <Show
+                                                when={
+                                                  groupRelations(
+                                                    extractRelations(
+                                                      obj(),
+                                                      store.selectedKind().kind,
+                                                    ),
+                                                  ).length
+                                                }
+                                              >
+                                                <section class="relations">
+                                                  <h3>Related</h3>
+                                                  <For
+                                                    each={groupRelations(
+                                                      extractRelations(
+                                                        obj(),
+                                                        store.selectedKind().kind,
+                                                      ),
+                                                    )}
+                                                  >
+                                                    {(group) => (
+                                                      <div class="relation-group">
+                                                        <div class="relation-group-title">
+                                                          {group.group}
+                                                        </div>
+                                                        <div class="relation-links">
+                                                          <For each={group.links}>
+                                                            {(link) => (
+                                                              <button
+                                                                type="button"
+                                                                class="relation-link"
+                                                                title={[
+                                                                  link.kind,
+                                                                  link.name,
+                                                                  link.labelSelector &&
+                                                                    Object.entries(
+                                                                      link.labelSelector,
+                                                                    )
+                                                                      .map(([k, v]) => `${k}=${v}`)
+                                                                      .join(","),
+                                                                  link.owner &&
+                                                                    `owner ${link.owner.kind}/${link.owner.name}`,
+                                                                ]
+                                                                  .filter(Boolean)
+                                                                  .join(" · ")}
+                                                                onClick={() => openRelation(link)}
+                                                              >
+                                                                {link.title}
+                                                              </button>
+                                                            )}
+                                                          </For>
+                                                        </div>
+                                                      </div>
+                                                    )}
+                                                  </For>
+                                                </section>
+                                              </Show>
+                                              <Show when={store.selectedKind().kind === "Pod"}>
+                                                <PodContainersSection
+                                                  pod={obj()}
+                                                  metrics={podMetricsFor(
+                                                    obj() as unknown as Record<string, unknown>,
+                                                  )}
+                                                />
+                                              </Show>
+                                              <dl class="kv">
+                                                <dt>Kind</dt>
+                                                <dd>
+                                                  {String(obj().kind || store.selectedKind().kind)}
+                                                </dd>
+                                                <Show when={listColumnCaps().namespace}>
+                                                  <dt>Namespace</dt>
+                                                  <dd>{objectNamespace(obj()) || "—"}</dd>
+                                                </Show>
+                                                <Show when={listColumnCaps().node}>
+                                                  <dt>Node</dt>
+                                                  <dd class="mono">{podNodeName(obj()) || "—"}</dd>
+                                                </Show>
+                                                <dt>UID</dt>
+                                                <dd class="mono">{objectKey(obj())}</dd>
+                                              </dl>
+                                              <section class="detail-block">
+                                                <h3>Labels</h3>
+                                                <Show
+                                                  when={
+                                                    Object.keys(obj().metadata?.labels || {}).length
+                                                  }
+                                                  fallback={<span class="muted">—</span>}
+                                                >
+                                                  <table class="meta-table">
+                                                    <thead>
+                                                      <tr>
+                                                        <th>Key</th>
+                                                        <th>Value</th>
+                                                      </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                      <For
+                                                        each={Object.entries(
+                                                          obj().metadata?.labels || {},
+                                                        )}
+                                                      >
+                                                        {([key, value]) => (
+                                                          <tr>
+                                                            <td class="mono">{key}</td>
+                                                            <td class="mono">{String(value)}</td>
+                                                          </tr>
+                                                        )}
+                                                      </For>
+                                                    </tbody>
+                                                  </table>
+                                                </Show>
+                                              </section>
+                                              <Show
+                                                when={
+                                                  obj().status != null &&
+                                                  typeof obj().status === "object" &&
+                                                  Object.keys(obj().status as object).length > 0
+                                                }
+                                              >
+                                                <section class="detail-block">
+                                                  <h3>Status</h3>
+                                                  <div class="kv-json">
+                                                    <CodeEditor
+                                                      language="json"
+                                                      readOnly
+                                                      compact
+                                                      value={JSON.stringify(obj().status, null, 2)}
+                                                    />
+                                                  </div>
+                                                </section>
+                                              </Show>
+                                            </div>
+                                          </Show>
+
+                                          <Show when={panel() === "data"}>
+                                            <ResourceDataEditor
+                                              context={store.selectedContext()}
+                                              apiVersion={
+                                                (obj().apiVersion as string) ||
+                                                store.selectedKind().apiVersion
+                                              }
+                                              kind={
+                                                (obj().kind as string) || store.selectedKind().kind
+                                              }
+                                              namespace={objectNamespace(obj()) || null}
+                                              name={objectName(obj())}
+                                              objectId={objectKey(obj())}
+                                              data={resourceDataMap(obj())}
+                                              isSecret={isOpaqueSecret(
+                                                obj(),
+                                                store.selectedKind().kind,
+                                              )}
+                                              onStatus={showStatus}
+                                              onApplied={async () => {
+                                                await reloadCurrentList();
+                                                await reloadSelectedYaml();
+                                              }}
+                                            />
+                                          </Show>
+
+                                          <Show when={panel() === "yaml"}>
+                                            <div class="yaml-wrap">
+                                              <div class="yaml-toolbar">
+                                                <button class="btn" onClick={() => applyYaml()}>
+                                                  Apply
+                                                </button>
+                                                <button class="btn ghost" onClick={() => runDiff()}>
+                                                  Diff vs loaded
+                                                </button>
+                                              </div>
+                                              <CodeEditor
+                                                language="yaml"
+                                                value={yaml()}
+                                                onChange={setYaml}
+                                              />
+                                            </div>
+                                          </Show>
+
+                                          <Show when={panel() === "logs"}>
+                                            <LogViewer
+                                              context={store.selectedContext()}
+                                              namespace={objectNamespace(obj())}
+                                              pod={
+                                                store.selectedKind().kind === "Pod"
+                                                  ? objectName(obj())
+                                                  : ""
+                                              }
+                                              containers={
+                                                store.selectedKind().kind === "Pod"
+                                                  ? podContainerNames(obj())
+                                                  : []
+                                              }
+                                              aggregated={aggMode()}
+                                              pods={
+                                                aggMode()
+                                                  ? objects()
+                                                      .filter(
+                                                        () => store.selectedKind().kind === "Pod",
+                                                      )
+                                                      .slice(0, 20)
+                                                      .map((p) => ({
+                                                        context: store.selectedContext(),
+                                                        namespace: objectNamespace(p),
+                                                        pod: objectName(p),
+                                                      }))
+                                                  : []
+                                              }
+                                            />
+                                          </Show>
+
+                                          <Show when={panel() === "exec"}>
+                                            <ExecTerminal
+                                              context={store.selectedContext()}
+                                              namespace={objectNamespace(obj())}
+                                              pod={objectName(obj())}
+                                              containers={podContainerNames(obj())}
+                                            />
+                                          </Show>
+
+                                          <Show when={panel() === "diff"}>
+                                            <div class="diff-view">
+                                              <For each={diffHunks()}>
+                                                {(h) => (
+                                                  <div class={`diff-line ${h.tag}`}>{h.value}</div>
+                                                )}
+                                              </For>
+                                            </div>
+                                          </Show>
+
+                                          <Show when={panel() === "portforward"}>
+                                            <div class="pf-panel">
+                                              <div class="pf-form">
+                                                <label>
+                                                  Local
+                                                  <input
+                                                    type="number"
+                                                    value={localPort()}
+                                                    onInput={(e) =>
+                                                      setLocalPort(Number(e.currentTarget.value))
+                                                    }
+                                                  />
+                                                </label>
+                                                <label>
+                                                  Remote
+                                                  <select
+                                                    value={String(remotePort())}
+                                                    onChange={(e) =>
+                                                      setRemotePort(Number(e.currentTarget.value))
+                                                    }
+                                                  >
+                                                    <For each={selectedPodPorts()}>
+                                                      {(p) => (
+                                                        <option value={String(p.port)}>
+                                                          {formatPodPort(p)}
+                                                        </option>
+                                                      )}
+                                                    </For>
+                                                  </select>
+                                                </label>
+                                                <button class="btn" onClick={() => startPf()}>
+                                                  Start
+                                                </button>
+                                                <Show when={pf()}>
+                                                  {(info) => (
+                                                    <button
+                                                      class="btn danger"
+                                                      onClick={async () => {
+                                                        await api.stopPortForward(
+                                                          info().context,
+                                                          info().id,
+                                                        );
+                                                        setPf(null);
+                                                      }}
+                                                    >
+                                                      Stop :{info().localPort}
+                                                    </button>
+                                                  )}
+                                                </Show>
+                                              </div>
+                                              <Show when={pf()}>
+                                                {(info) => (
+                                                  <p>
+                                                    Forwarding{" "}
+                                                    <code>
+                                                      localhost:{info().localPort} → {info().pod}:
+                                                      {info().remotePort}
+                                                    </code>
+                                                  </p>
+                                                )}
+                                              </Show>
+                                            </div>
+                                          </Show>
+                                        </section>
+                                      </>
+                                    )}
                                   </Show>
-                                </section>
-                              </>
-                            )}
+                                </Show>
+                              </div>
+                            }
+                          >
+                            <LonghornOverviewView
+                              context={store.selectedContext()}
+                              onOpenResource={(target) => {
+                                const apiVersion = resolveResourceApiVersion(
+                                  target.kind,
+                                  target.apiVersion,
+                                  store.apiResources[store.selectedContext()] || [],
+                                );
+                                if (!apiVersion || !target.kind || !target.name) return;
+                                store.clearListFilters();
+                                store.setSelectedObjectKey(null);
+                                setViewingNodeName(null);
+                                store.setSelectedKind({
+                                  apiVersion,
+                                  kind: target.kind,
+                                });
+                                if (target.namespace) {
+                                  store.setSelectedNamespaces(store.selectedContext(), [
+                                    target.namespace,
+                                  ]);
+                                }
+                                store.setSearchQuery(target.name);
+                                setPendingSelectName(target.name);
+                                setPanel("detail");
+                              }}
+                              onOpenSegment={(cardKind, statusLabel) => {
+                                const ctx = store.selectedContext();
+                                setViewingNodeName(null);
+                                store.setSelectedObjectKey(null);
+                                store.clearListFilters();
+
+                                if (cardKind === "Node") {
+                                  // Use the curated Kubernetes Node list + NodeDetailView.
+                                  // Map Longhorn dashboard labels onto kubelet status chips.
+                                  const mapped =
+                                    statusLabel === "Down"
+                                      ? "NotReady"
+                                      : statusLabel === "Disabled" ||
+                                          statusLabel === "Unschedulable"
+                                        ? "SchedulingDisabled"
+                                        : statusLabel === "Schedulable"
+                                          ? "Ready"
+                                          : statusLabel || null;
+                                  store.setSelectedKind({ apiVersion: "v1", kind: "Node" });
+                                  store.setStatusFilter(mapped);
+                                  return;
+                                }
+
+                                const discovered = store.apiResources[ctx] || [];
+                                const apiVersion = longhornApiVersion(discovered, cardKind);
+                                if (!apiVersion) return;
+                                // Longhorn Volume CRs live in longhorn-system; show all namespaces.
+                                store.setSelectedNamespaces(ctx, ["*"]);
+                                store.setSelectedKind({ apiVersion, kind: cardKind });
+                                store.setStatusFilter(statusLabel || null);
+                              }}
+                            />
                           </Show>
-                        </Show>
-                      </div>
                         }
                       >
-                        <LonghornOverviewView
+                        <OverviewView
                           context={store.selectedContext()}
+                          namespaces={
+                            store.selectedNamespaces[store.selectedContext()] || ["default"]
+                          }
                           onOpenResource={(target) => {
                             const apiVersion = resolveResourceApiVersion(
                               target.kind,
@@ -2509,74 +2632,16 @@ function App() {
                             setPanel("detail");
                           }}
                           onOpenSegment={(cardKind, statusLabel) => {
-                            const ctx = store.selectedContext();
+                            const target = overviewKindToResource(cardKind);
+                            if (!target) return;
                             setViewingNodeName(null);
+                            store.setSelectedKind(target);
                             store.setSelectedObjectKey(null);
                             store.clearListFilters();
-
-                            if (cardKind === "Node") {
-                              // Use the curated Kubernetes Node list + NodeDetailView.
-                              // Map Longhorn dashboard labels onto kubelet status chips.
-                              const mapped =
-                                statusLabel === "Down"
-                                  ? "NotReady"
-                                  : statusLabel === "Disabled" || statusLabel === "Unschedulable"
-                                    ? "SchedulingDisabled"
-                                    : statusLabel === "Schedulable"
-                                      ? "Ready"
-                                      : statusLabel || null;
-                              store.setSelectedKind({ apiVersion: "v1", kind: "Node" });
-                              store.setStatusFilter(mapped);
-                              return;
-                            }
-
-                            const discovered = store.apiResources[ctx] || [];
-                            const apiVersion = longhornApiVersion(discovered, cardKind);
-                            if (!apiVersion) return;
-                            // Longhorn Volume CRs live in longhorn-system; show all namespaces.
-                            store.setSelectedNamespaces(ctx, ["*"]);
-                            store.setSelectedKind({ apiVersion, kind: cardKind });
                             store.setStatusFilter(statusLabel || null);
                           }}
                         />
                       </Show>
-                    }
-                  >
-                    <OverviewView
-                      context={store.selectedContext()}
-                      namespaces={store.selectedNamespaces[store.selectedContext()] || ["default"]}
-                      onOpenResource={(target) => {
-                        const apiVersion = resolveResourceApiVersion(
-                          target.kind,
-                          target.apiVersion,
-                          store.apiResources[store.selectedContext()] || [],
-                        );
-                        if (!apiVersion || !target.kind || !target.name) return;
-                        store.clearListFilters();
-                        store.setSelectedObjectKey(null);
-                        setViewingNodeName(null);
-                        store.setSelectedKind({
-                          apiVersion,
-                          kind: target.kind,
-                        });
-                        if (target.namespace) {
-                          store.setSelectedNamespaces(store.selectedContext(), [target.namespace]);
-                        }
-                        store.setSearchQuery(target.name);
-                        setPendingSelectName(target.name);
-                        setPanel("detail");
-                      }}
-                      onOpenSegment={(cardKind, statusLabel) => {
-                        const target = overviewKindToResource(cardKind);
-                        if (!target) return;
-                        setViewingNodeName(null);
-                        store.setSelectedKind(target);
-                        store.setSelectedObjectKey(null);
-                        store.clearListFilters();
-                        store.setStatusFilter(statusLabel || null);
-                      }}
-                    />
-                  </Show>
                     }
                   >
                     {(_nodeName) => (
@@ -2691,7 +2756,9 @@ function App() {
                     Visualize
                   </button>
                 </Show>
-                <Show when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}>
+                <Show
+                  when={canNodeAction(store.selectedKind().kind, store.selectedKind().apiVersion)}
+                >
                   <Show when={selectionHasSchedulableNode(menu().keys)}>
                     <button
                       class="ctx-item"

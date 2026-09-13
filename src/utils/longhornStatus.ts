@@ -44,7 +44,12 @@ export function longhornVolumeStatusLabel(obj: Record<string, unknown>): {
 
   if (robustness === "faulted") return { text: "Fault", tone: "err" };
   if (state === "detached") return { text: "Detached", tone: "muted" };
-  if (state === "creating" || state === "attaching" || state === "detaching" || state === "deleting") {
+  if (
+    state === "creating" ||
+    state === "attaching" ||
+    state === "detaching" ||
+    state === "deleting"
+  ) {
     return { text: "In Progress", tone: "info" };
   }
   if (robustness === "degraded") return { text: "Degraded", tone: "warn" };

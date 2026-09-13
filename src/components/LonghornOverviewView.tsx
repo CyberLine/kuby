@@ -298,14 +298,16 @@ function SemiGauge(props: {
   const STROKE = 14;
   const TRACK = Math.PI * R;
 
-  const total = () => Math.max(
-    props.segments.reduce((sum, s) => sum + Math.max(0, s.value), 0),
-    0,
-  );
+  const total = () =>
+    Math.max(
+      props.segments.reduce((sum, s) => sum + Math.max(0, s.value), 0),
+      0,
+    );
 
   const arcs = () => {
     const sum = total();
-    if (sum <= 0) return [] as { tone: string; offset: number; length: number; label: string; value: number }[];
+    if (sum <= 0)
+      return [] as { tone: string; offset: number; length: number; label: string; value: number }[];
     let offset = 0;
     const out: { tone: string; offset: number; length: number; label: string; value: number }[] =
       [];

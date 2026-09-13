@@ -4,6 +4,7 @@ import type {
   ContextInfo,
   DiffHunk,
   DiscoveredResource,
+  LonghornOverview,
   NamespaceListResult,
   NodeMetrics,
   NodeStats,
@@ -12,7 +13,6 @@ import type {
   ResourceIdentifier,
   RollbackResult,
   WorkloadOverview,
-  LonghornOverview,
 } from "../types";
 
 export const api = {

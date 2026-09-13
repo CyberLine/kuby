@@ -98,20 +98,17 @@ function containerStateLabel(cs: Record<string, unknown> | undefined): StatusLab
 
   const waiting = asRecord(state.waiting);
   if (waiting) {
-    const reason = typeof waiting.reason === "string" && waiting.reason ? waiting.reason : "Waiting";
+    const reason =
+      typeof waiting.reason === "string" && waiting.reason ? waiting.reason : "Waiting";
     return { text: reason, tone: waitingTone(reason) };
   }
 
   const terminated = asRecord(state.terminated);
   if (terminated) {
     const reason =
-      typeof terminated.reason === "string" && terminated.reason
-        ? terminated.reason
-        : "Terminated";
+      typeof terminated.reason === "string" && terminated.reason ? terminated.reason : "Terminated";
     const exitCode =
-      typeof terminated.exitCode === "number"
-        ? terminated.exitCode
-        : Number(terminated.exitCode);
+      typeof terminated.exitCode === "number" ? terminated.exitCode : Number(terminated.exitCode);
     const text =
       Number.isFinite(exitCode) && reason === "Completed"
         ? `Completed (${exitCode})`
@@ -194,8 +191,7 @@ function mergeGroup(
           : cs
             ? 0
             : null;
-    const ready =
-      typeof cs?.ready === "boolean" ? cs.ready : cs ? Boolean(cs.ready) : null;
+    const ready = typeof cs?.ready === "boolean" ? cs.ready : cs ? Boolean(cs.ready) : null;
     const statusImage = typeof cs?.image === "string" ? cs.image : "";
     const specImage = typeof spec?.image === "string" ? spec.image : "";
     const m = metricsByName.get(name);

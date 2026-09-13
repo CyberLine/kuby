@@ -160,8 +160,7 @@ export function NodeDetailView(props: Props) {
         percent: storagePct(),
         tone: percentTone(storagePct()),
         samples: storageSamples(),
-        emptyHint:
-          storageUsedBytes() == null ? "No kubelet storage stats" : "Collecting samples…",
+        emptyHint: storageUsedBytes() == null ? "No kubelet storage stats" : "Collecting samples…",
       },
       {
         title: "Pods",
@@ -362,7 +361,8 @@ export function NodeDetailView(props: Props) {
 
         <Show when={metricsUnavailable()}>
           <div class="banner warn node-metrics-banner">
-            metrics-server unavailable — showing capacity only; live usage graphs need metrics.k8s.io
+            metrics-server unavailable — showing capacity only; live usage graphs need
+            metrics.k8s.io
           </div>
         </Show>
 

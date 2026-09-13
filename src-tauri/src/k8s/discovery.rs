@@ -150,6 +150,39 @@ impl DiscoveryCache {
     }
 }
 
+const CURATED: &[(&str, &str)] = &[
+    ("", "Pod"),
+    ("", "Service"),
+    ("", "ConfigMap"),
+    ("", "Secret"),
+    ("", "Namespace"),
+    ("", "Node"),
+    ("", "PersistentVolume"),
+    ("", "PersistentVolumeClaim"),
+    ("", "ServiceAccount"),
+    ("", "Endpoints"),
+    ("", "Event"),
+    ("", "LimitRange"),
+    ("", "ResourceQuota"),
+    ("apps", "Deployment"),
+    ("apps", "ReplicaSet"),
+    ("apps", "StatefulSet"),
+    ("apps", "DaemonSet"),
+    ("apps", "ControllerRevision"),
+    ("batch", "Job"),
+    ("batch", "CronJob"),
+    ("networking.k8s.io", "Ingress"),
+    ("networking.k8s.io", "NetworkPolicy"),
+    ("networking.k8s.io", "IngressClass"),
+    ("rbac.authorization.k8s.io", "Role"),
+    ("rbac.authorization.k8s.io", "RoleBinding"),
+    ("rbac.authorization.k8s.io", "ClusterRole"),
+    ("rbac.authorization.k8s.io", "ClusterRoleBinding"),
+    ("storage.k8s.io", "StorageClass"),
+    ("policy", "PodDisruptionBudget"),
+    ("autoscaling", "HorizontalPodAutoscaler"),
+];
+
 fn is_curated(group: &str, kind: &str) -> bool {
     CURATED.iter().any(|(g, k)| *g == group && *k == kind)
 }
@@ -181,7 +214,7 @@ fn is_create_only(group: &str, kind: &str) -> bool {
 }
 
 fn is_list_only_group(group: &str) -> bool {
-    LIST_ONLY_GROUPS.iter().any(|g| *g == group)
+    LIST_ONLY_GROUPS.contains(&group)
 }
 
 pub fn is_listable(group: &str, kind: &str, verbs: &[String]) -> bool {
@@ -249,36 +282,3 @@ mod tests {
         assert!(!is_watchable("example.com", "Foo", &v));
     }
 }
-
-const CURATED: &[(&str, &str)] = &[
-    ("", "Pod"),
-    ("", "Service"),
-    ("", "ConfigMap"),
-    ("", "Secret"),
-    ("", "Namespace"),
-    ("", "Node"),
-    ("", "PersistentVolume"),
-    ("", "PersistentVolumeClaim"),
-    ("", "ServiceAccount"),
-    ("", "Endpoints"),
-    ("", "Event"),
-    ("", "LimitRange"),
-    ("", "ResourceQuota"),
-    ("apps", "Deployment"),
-    ("apps", "ReplicaSet"),
-    ("apps", "StatefulSet"),
-    ("apps", "DaemonSet"),
-    ("apps", "ControllerRevision"),
-    ("batch", "Job"),
-    ("batch", "CronJob"),
-    ("networking.k8s.io", "Ingress"),
-    ("networking.k8s.io", "NetworkPolicy"),
-    ("networking.k8s.io", "IngressClass"),
-    ("rbac.authorization.k8s.io", "Role"),
-    ("rbac.authorization.k8s.io", "RoleBinding"),
-    ("rbac.authorization.k8s.io", "ClusterRole"),
-    ("rbac.authorization.k8s.io", "ClusterRoleBinding"),
-    ("storage.k8s.io", "StorageClass"),
-    ("policy", "PodDisruptionBudget"),
-    ("autoscaling", "HorizontalPodAutoscaler"),
-];
