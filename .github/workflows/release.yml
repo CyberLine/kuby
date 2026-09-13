@@ -14,6 +14,10 @@ permissions:
 
 # macOS: vars.MACOS_RUNNER = self-hosted | macos-latest (default: self-hosted).
 # GITHUB_TOKEN cannot list runners (403) — no automatic online-detection.
+#
+# Self-hosted Macs: skip GitHub Actions cache (pnpm / rust-cache). Remote cache
+# restore often hits "operation cannot be completed in timeout" and "pnpm cache
+# is not found", while the machine already has local toolchains/stores.
 
 jobs:
   linux:
@@ -83,8 +87,8 @@ jobs:
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-  # Signed build only (no Apple notarization). Completes so rust-cache is saved
-  # even when the later notarization job times out waiting on Apple.
+  # Signed build only (no Apple notarization). Upload bundles as workflow
+  # artifacts so notarization can retry without a full universal rebuild.
   macos-build:
     name: macOS build
     runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
@@ -106,16 +110,10 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: release-macos-${{ vars.MACOS_RUNNER || 'self-hosted' }}-universal
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -146,6 +144,18 @@ jobs:
         with:
           args: --target universal-apple-darwin
 
+      - name: Upload signed macOS bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bundles-${{ github.ref_name }}
+          path: |
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 5
+          # .app is a directory tree; compression keeps artifact size manageable
+          compression-level: 6
+
       - name: Cleanup signing keychain
         if: always() && env.APPLE_KEYCHAIN_PATH != ''
         run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
@@ -154,7 +164,8 @@ jobs:
     name: macOS notarize & upload
     needs: macos-build
     runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
-    timeout-minutes: 90
+    # Apple upload + queue can exceed an hour on slow links; retries are in-script.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
 
@@ -163,53 +174,57 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
-          cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          key: release-macos-${{ vars.MACOS_RUNNER || 'self-hosted' }}-universal
-
+      # Only need the CLI for `tauri signer sign` — no Rust toolchain / rebuild.
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
 
-      - name: Sync Cargo.toml version
-        run: pnpm sync-version
+      - name: Download signed macOS bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-bundles-${{ github.ref_name }}
+          path: src-tauri/target/universal-apple-darwin/release/bundle
 
-      - name: Setup Apple signing keychain
+      - name: Resolve bundle paths
+        id: paths
+        run: |
+          set -euo pipefail
+          root="src-tauri/target/universal-apple-darwin/release/bundle"
+          app="${root}/macos/Kuby.app"
+          dmg="$(find "${root}/dmg" -maxdepth 1 -name 'Kuby_*.dmg' -type f | head -1)"
+          if [ ! -d "$app" ]; then
+            echo "::error::Kuby.app missing after artifact download"
+            find "$root" -maxdepth 4 -print || true
+            exit 1
+          fi
+          if [ -z "$dmg" ]; then
+            echo "::error::DMG missing after artifact download"
+            exit 1
+          fi
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+          echo "app=${app}" >> "$GITHUB_OUTPUT"
+          echo "dmg=${dmg}" >> "$GITHUB_OUTPUT"
+          ls -lah "${root}/macos" "${root}/dmg"
+
+      - name: Notarize & staple
         env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: bash .github/scripts/setup-apple-signing-keychain.sh
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARY_SUBMIT_ATTEMPTS: "4"
+          NOTARY_SUBMIT_TIMEOUT_SEC: "900"
+          NOTARY_POLL_MAX_SEC: "3600"
+        run: |
+          chmod +x .github/scripts/notarize-macos.sh
+          bash .github/scripts/notarize-macos.sh \
+            "${{ steps.paths.outputs.app }}" \
+            "${{ steps.paths.outputs.dmg }}"
 
-      - name: Notarize, staple & upload release assets
-        uses: tauri-apps/tauri-action@v1
+      - name: Publish macOS release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_BUNDLER_DMG_IGNORE_CI: "false"
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Kuby ${{ github.ref_name }}
-          releaseBody: |
-            Downloads for **${{ github.ref_name }}**:
-
-            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
-            - **Linux**: `.AppImage`, `.deb`, `.rpm`
-          releaseDraft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          args: --target universal-apple-darwin
-
-      - name: Cleanup signing keychain
-        if: always() && env.APPLE_KEYCHAIN_PATH != ''
-        run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
+        run: |
+          chmod +x .github/scripts/publish-macos-release.sh
+          bash .github/scripts/publish-macos-release.sh "${{ steps.paths.outputs.root }}"
