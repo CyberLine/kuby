@@ -1,0 +1,215 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+# macOS: vars.MACOS_RUNNER = self-hosted | macos-latest (default: self-hosted).
+# GITHUB_TOKEN cannot list runners (403) — no automatic online-detection.
+
+jobs:
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}"
+            exit 1
+          fi
+
+      - name: Install Linux WebKit/GTK deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            pkg-config \
+            rpm
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-linux-x64
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync Cargo.toml version
+        run: pnpm sync-version
+
+      - name: Build & upload release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          NO_STRIP: true
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Kuby ${{ github.ref_name }}
+          releaseBody: |
+            Downloads for **${{ github.ref_name }}**:
+
+            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
+            - **Linux**: `.AppImage`, `.deb`, `.rpm`
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # Signed build only (no Apple notarization). Completes so rust-cache is saved
+  # even when the later notarization job times out waiting on Apple.
+  macos-build:
+    name: macOS build
+    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match package.json version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-macos-${{ vars.MACOS_RUNNER || 'self-hosted' }}-universal
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync Cargo.toml version
+        run: pnpm sync-version
+
+      - name: Setup Apple signing keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: bash .github/scripts/setup-apple-signing-keychain.sh
+
+      - name: Build & sign (skip notarization)
+        uses: tauri-apps/tauri-action@v1
+        env:
+          # Use the keychain from the setup step. Do NOT pass APPLE_CERTIFICATE
+          # here — Tauri would create another temp keychain and hit
+          # errSecInternalComponent on self-hosted runners.
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # tauri-action defaults this to true, which forces Finder AppleScript
+          # even when CI=true. That fails on many self-hosted Macs → false so
+          # the bundler passes --skip-jenkins and builds a plain DMG.
+          TAURI_BUNDLER_DMG_IGNORE_CI: "false"
+        with:
+          args: --target universal-apple-darwin
+
+      - name: Cleanup signing keychain
+        if: always() && env.APPLE_KEYCHAIN_PATH != ''
+        run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true
+
+  macos-notarize:
+    name: macOS notarize & upload
+    needs: macos-build
+    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-macos-${{ vars.MACOS_RUNNER || 'self-hosted' }}-universal
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync Cargo.toml version
+        run: pnpm sync-version
+
+      - name: Setup Apple signing keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: bash .github/scripts/setup-apple-signing-keychain.sh
+
+      - name: Notarize, staple & upload release assets
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_BUNDLER_DMG_IGNORE_CI: "false"
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Kuby ${{ github.ref_name }}
+          releaseBody: |
+            Downloads for **${{ github.ref_name }}**:
+
+            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
+            - **Linux**: `.AppImage`, `.deb`, `.rpm`
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          args: --target universal-apple-darwin
+
+      - name: Cleanup signing keychain
+        if: always() && env.APPLE_KEYCHAIN_PATH != ''
+        run: security delete-keychain "$APPLE_KEYCHAIN_PATH" || true

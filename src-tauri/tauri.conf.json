@@ -1,0 +1,70 @@
+{
+	"$schema": "https://schema.tauri.app/config/2",
+	"productName": "Kuby",
+	"version": "../package.json",
+	"identifier": "com.alexanderover.kuby",
+	"build": {
+		"beforeDevCommand": "pnpm dev",
+		"devUrl": "http://localhost:1420",
+		"beforeBuildCommand": "pnpm sync-version && pnpm build",
+		"frontendDist": "../dist"
+	},
+	"app": {
+		"windows": [
+			{
+				"title": "Kuby",
+				"width": 1400,
+				"height": 900,
+				"minWidth": 960,
+				"minHeight": 640
+			}
+		],
+		"security": {
+			"csp": null
+		}
+	},
+	"bundle": {
+		"active": true,
+		"createUpdaterArtifacts": true,
+		"copyright": "© 2026 Alexander Over",
+		"publisher": "Alexander Over",
+		"homepage": "https://github.com/CyberLine/kuby",
+		"shortDescription": "Native multi-cluster Kubernetes desktop client",
+		"targets": ["app", "dmg", "appimage", "deb", "rpm"],
+		"icon": [
+			"icons/32x32.png",
+			"icons/128x128.png",
+			"icons/128x128@2x.png",
+			"icons/icon.icns",
+			"icons/icon.ico"
+		],
+		"macOS": {
+			"minimumSystemVersion": "11.0",
+			"hardenedRuntime": true,
+			"signingIdentity": null,
+			"entitlements": null
+		},
+		"linux": {
+			"appimage": {
+				"bundleMediaFramework": false
+			},
+			"deb": {
+				"depends": []
+			},
+			"rpm": {
+				"release": "1"
+			}
+		}
+	},
+	"plugins": {
+		"updater": {
+			"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlDNTE2MjgwRUEwNjQwNDUKUldSRlFBYnFnR0pSbkdHZHE4eHpabG1XM0FkZGdTREdxNHVHTldYS0hBNnQ0T1l6MVptdXRuKzEK",
+			"endpoints": [
+				"https://github.com/CyberLine/kuby/releases/latest/download/latest.json"
+			],
+			"windows": {
+				"installMode": "passive"
+			}
+		}
+	}
+}

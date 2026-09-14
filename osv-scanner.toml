@@ -1,0 +1,30 @@
+# Applies to both lockfiles via --config in .github/workflows/security.yml.
+# Advisory IDs also cover aliases (e.g. GHSA-*).
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0429"
+reason = "Unsound glib::VariantStrIter in gtk-rs 0.18, pinned by Tauri 2 webkit2gtk. No 0.20 bump without a Tauri GTK major."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0370"
+reason = "proc-macro-error is unmaintained; build-time only, no patched crate."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0081"
+reason = "unic-char-property is unmaintained; transitive, no patched crate."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0075"
+reason = "unic-char-range is unmaintained; transitive, no patched crate."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0080"
+reason = "unic-common is unmaintained; transitive, no patched crate."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0100"
+reason = "unic-ucd-ident is unmaintained; transitive, no patched crate."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0098"
+reason = "unic-ucd-version is unmaintained; transitive, no patched crate."

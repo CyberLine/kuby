@@ -1,0 +1,13 @@
+title = "Kuby"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public client identifiers and build artifacts"
+regexes = [
+  '''https://d9e43a5ce95be19fc2f20293fa2188b4@o4510487186571264\.ingest\.de\.sentry\.io/4512055874551888''',
+]
+paths = [
+  '''(^|/)(node_modules|dist|src-tauri/target|target)/''',
+]

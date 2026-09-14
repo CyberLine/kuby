@@ -1,0 +1,66 @@
+min_version: 2.0.0
+
+# GUI Git clients (PhpStorm, GitHub Desktop, …) do not load the shell profile,
+# so rustup and Homebrew are missing from PATH. Keep PATH exports in every job.
+pre-commit:
+  parallel: true
+  jobs:
+    - name: biome
+      glob: "*.{ts,tsx,js,jsx,json,css,html}"
+      exclude:
+        - pnpm-lock.yaml
+        - src-tauri/gen/**
+        - src-tauri/target/**
+      run: |
+        set -euo pipefail
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        root="$(git rev-parse --show-toplevel)"
+        biome_bin="${root}/node_modules/.bin/biome"
+        if [ ! -x "$biome_bin" ]; then
+          echo "biome not found at ${biome_bin}; run: pnpm install"
+          exit 1
+        fi
+        "$biome_bin" check --write --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+      stage_fixed: true
+
+    - name: rustfmt
+      glob: "*.rs"
+      exclude:
+        - src-tauri/target/**
+        - src-tauri/gen/**
+      run: |
+        set -euo pipefail
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        if ! command -v rustfmt >/dev/null 2>&1; then
+          echo "rustfmt not found; install with: rustup component add rustfmt"
+          exit 1
+        fi
+        rustfmt --edition 2021 {staged_files}
+      stage_fixed: true
+
+    - name: gitleaks
+      run: |
+        set -euo pipefail
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        if command -v gitleaks >/dev/null 2>&1; then
+          gitleaks protect --staged --redact --no-banner
+        else
+          echo "gitleaks not installed; skipping local secret scan."
+          echo "Install with: brew install gitleaks"
+        fi
+
+# Same gate as GitHub Actions Quality → Biome (`pnpm exec biome ci .`).
+# Catches commits made with --no-verify / LEFTHOOK=0 before they reach GitHub.
+pre-push:
+  jobs:
+    - name: biome-ci
+      run: |
+        set -euo pipefail
+        export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
+        root="$(git rev-parse --show-toplevel)"
+        biome_bin="${root}/node_modules/.bin/biome"
+        if [ ! -x "$biome_bin" ]; then
+          echo "biome not found at ${biome_bin}; run: pnpm install"
+          exit 1
+        fi
+        "$biome_bin" ci .
