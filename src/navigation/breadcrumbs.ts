@@ -1,12 +1,7 @@
 import { kindIsClusterScoped } from "../constants/resources";
 import type { NavLocation, NavMode } from "./history";
 
-export type BreadcrumbAction =
-  | "overview"
-  | "kind-list"
-  | "close-visualize"
-  | "close-node"
-  | null;
+export type BreadcrumbAction = "overview" | "kind-list" | "close-visualize" | "close-node" | null;
 
 export type BreadcrumbSegment = {
   id: string;

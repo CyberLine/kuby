@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder, HELP_SUBMENU_ID};
 #[cfg(target_os = "macos")]
 use tauri::menu::WINDOW_SUBMENU_ID;
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder, HELP_SUBMENU_ID};
 use tauri::{Emitter, Manager, Runtime};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::mpsc;

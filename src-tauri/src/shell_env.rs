@@ -149,7 +149,8 @@ fn capture_windows_env() -> Result<HashMap<String, String>, String> {
         .open_subkey_with_flags("Environment", KEY_READ)
         .map_err(|e| format!("open user Environment: {e}"))?;
 
-    let machine_path = read_reg_string(&machine, "Path").or_else(|| read_reg_string(&machine, "PATH"));
+    let machine_path =
+        read_reg_string(&machine, "Path").or_else(|| read_reg_string(&machine, "PATH"));
     let user_path = read_reg_string(&user, "Path").or_else(|| read_reg_string(&user, "PATH"));
     let user_expanded = user_path.as_deref().map(expand_env_strings);
     let machine_expanded = machine_path.as_deref().map(expand_env_strings);
@@ -157,9 +158,7 @@ fn capture_windows_env() -> Result<HashMap<String, String>, String> {
     let mut map = HashMap::new();
     read_reg_env_values(&user, &mut map);
 
-    if let Some(path) =
-        merge_path_strings(user_expanded.as_deref(), machine_expanded.as_deref())
-    {
+    if let Some(path) = merge_path_strings(user_expanded.as_deref(), machine_expanded.as_deref()) {
         map.insert("PATH".into(), path);
     }
 

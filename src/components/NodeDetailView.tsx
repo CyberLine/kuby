@@ -382,7 +382,9 @@ export function NodeDetailView(props: Props) {
                 <Show when={ev.count > 1}>
                   <span class="muted"> · ×{ev.count}</span>
                 </Show>
-                <p class="node-cert-banner-msg">{ev.message || "Node certificate is expiring soon"}</p>
+                <p class="node-cert-banner-msg">
+                  {ev.message || "Node certificate is expiring soon"}
+                </p>
               </div>
             )}
           </For>

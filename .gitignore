@@ -9,3 +9,4 @@ lefthook-local.yml
 coverage
 *.tsbuildinfo
 .idea
+.pnpm-store/

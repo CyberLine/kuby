@@ -72,5 +72,3 @@ export function createNavHistory() {
 
   return { canBack, peekBack, push, back, clear, past };
 }
-
-export type NavHistory = ReturnType<typeof createNavHistory>;

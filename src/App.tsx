@@ -57,6 +57,13 @@ import {
   resourceIsListable,
 } from "./constants/resources";
 import { isDemoMode } from "./fixtures/demo";
+import { type BreadcrumbSegment, buildBreadcrumbs } from "./navigation/breadcrumbs";
+import {
+  createNavHistory,
+  locationLabel,
+  type NavLocation,
+  type NavMode,
+} from "./navigation/history";
 import { clusterStore } from "./stores/cluster";
 import { telemetryStore } from "./stores/telemetry";
 import type {
@@ -94,13 +101,6 @@ import {
   nodeStatusLabels,
   nodeStatusText,
 } from "./utils/nodeStatus";
-import { buildBreadcrumbs, type BreadcrumbSegment } from "./navigation/breadcrumbs";
-import {
-  createNavHistory,
-  locationLabel,
-  type NavLocation,
-  type NavMode,
-} from "./navigation/history";
 import { extractRelations, groupRelations, type RelationLink } from "./utils/relations";
 import {
   canRollbackReplicaSet,
@@ -2030,9 +2030,7 @@ function App() {
                               <Show when={seg.id === "kind" || seg.id === "visualize"}>
                                 <ResourceIcon
                                   kind={
-                                    seg.id === "visualize"
-                                      ? "Namespace"
-                                      : store.selectedKind().kind
+                                    seg.id === "visualize" ? "Namespace" : store.selectedKind().kind
                                   }
                                 />
                               </Show>
