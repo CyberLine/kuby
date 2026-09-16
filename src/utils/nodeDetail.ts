@@ -101,6 +101,23 @@ export function nodeConditions(obj: Record<string, unknown>): NodeCondition[] {
   return out;
 }
 
+export function isCertificateRelatedText(...parts: string[]): boolean {
+  const hay = parts.join(" ").toLowerCase();
+  return hay.includes("certificate") && (hay.includes("expir") || hay.includes("rotat"));
+}
+
+export function isCertificateWarningEvent(ev: {
+  type?: string;
+  reason?: string;
+  message?: string;
+}): boolean {
+  const typ = (ev.type || "").toLowerCase();
+  if (typ && typ !== "warning") return false;
+  const reason = ev.reason || "";
+  if (/certificateexpiration/i.test(reason)) return true;
+  return isCertificateRelatedText(reason, ev.message || "");
+}
+
 export function conditionTone(c: NodeCondition): StatusLabel["tone"] {
   const pressure =
     c.type === "MemoryPressure" ||
@@ -114,6 +131,9 @@ export function conditionTone(c: NodeCondition): StatusLabel["tone"] {
   }
   if (pressure) {
     return c.status === "True" ? "warn" : "ok";
+  }
+  if (isCertificateRelatedText(c.type, c.reason, c.message)) {
+    return "warn";
   }
   return c.status === "True" ? "ok" : "muted";
 }

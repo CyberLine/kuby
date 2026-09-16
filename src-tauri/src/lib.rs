@@ -7,9 +7,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tauri::menu::{
-    Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
-};
+use tauri::menu::{Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder, HELP_SUBMENU_ID};
+#[cfg(target_os = "macos")]
+use tauri::menu::WINDOW_SUBMENU_ID;
 use tauri::{Emitter, Manager, Runtime};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::mpsc;
@@ -43,6 +43,7 @@ fn build_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R
         .select_all()
         .build()?;
 
+    #[cfg(target_os = "macos")]
     let window_submenu = SubmenuBuilder::with_id(app, WINDOW_SUBMENU_ID, "Window")
         .minimize()
         .maximize()
@@ -94,9 +95,10 @@ fn build_app_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R
 
     #[cfg(not(target_os = "macos"))]
     {
+        // GTK/Windows: predefined Window items (minimize/maximize/close) often
+        // render as an empty "Window" menu — omit it; chrome handles that.
         MenuBuilder::new(app)
             .item(&edit_submenu)
-            .item(&window_submenu)
             .item(&help_submenu)
             .build()
     }
@@ -183,6 +185,7 @@ pub fn run() {
             commands::nodes::cordon_node,
             commands::nodes::uncordon_node,
             commands::nodes::drain_node,
+            commands::nodes::list_node_events,
             commands::logs::start_pod_logs,
             commands::logs::stop_pod_logs,
             commands::logs::start_aggregated_logs,

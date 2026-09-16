@@ -130,6 +130,15 @@ export interface NodeStats {
   fsCapacityBytes?: number | null;
 }
 
+export interface NodeEvent {
+  type: string;
+  reason: string;
+  message: string;
+  count: number;
+  lastSeen: string;
+  age: string;
+}
+
 export interface OverviewSegment {
   label: string;
   count: number;

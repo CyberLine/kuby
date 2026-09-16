@@ -1,6 +1,6 @@
 {
   "name": "kuby",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Native multi-cluster Kubernetes desktop client",
   "type": "module",
   "packageManager": "pnpm@11.9.0",

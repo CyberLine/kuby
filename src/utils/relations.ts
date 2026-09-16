@@ -344,8 +344,20 @@ export function extractRelations(obj: K8sObject, kind: string): RelationLink[] {
     }
   }
 
-  // Pod → volumes claiming PVCs
+  // Pod → node, volumes, service account
   if (kind === "Pod") {
+    const nodeName = typeof spec?.nodeName === "string" ? spec.nodeName : null;
+    if (nodeName) {
+      links.push({
+        id: `pod-node-${nodeName}`,
+        group: "Cluster",
+        title: `Node/${nodeName}`,
+        apiVersion: "v1",
+        kind: "Node",
+        namespace: null,
+        name: nodeName,
+      });
+    }
     const volumes = Array.isArray(spec?.volumes) ? spec!.volumes : [];
     for (const vol of volumes) {
       const v = asRecord(vol);

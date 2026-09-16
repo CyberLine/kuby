@@ -376,7 +376,8 @@ fn pdb_card(items: &[PodDisruptionBudget]) -> OverviewCard {
 }
 
 fn aggregate_warnings(context: &str, events: &[Event]) -> Vec<OverviewWarning> {
-    let mut by_reason: HashMap<String, OverviewWarning> = HashMap::new();
+    let mut by_reason: HashMap<String, (Option<k8s_openapi::jiff::Timestamp>, OverviewWarning)> =
+        HashMap::new();
     for ev in events {
         let typ = ev.type_.as_deref().unwrap_or("");
         if !typ.eq_ignore_ascii_case("Warning") {
@@ -419,9 +420,15 @@ fn aggregate_warnings(context: &str, events: &[Event]) -> Vec<OverviewWarning> {
 
         by_reason
             .entry(reason.clone())
-            .and_modify(|w| {
+            .and_modify(|(ts, w)| {
                 w.count += count;
-                if last_str > w.last_seen {
+                let newer = match (&last, &*ts) {
+                    (Some(n), Some(prev)) => n > prev,
+                    (Some(_), None) => true,
+                    _ => false,
+                };
+                if newer {
+                    *ts = last;
                     w.last_seen = last_str.clone();
                     w.age = age.clone();
                     w.message = message.clone();
@@ -432,28 +439,37 @@ fn aggregate_warnings(context: &str, events: &[Event]) -> Vec<OverviewWarning> {
                     w.involved_api_version = involved_api_version.clone();
                 }
             })
-            .or_insert(OverviewWarning {
-                reason,
-                count,
-                last_seen: last_str,
-                age,
-                message,
-                involved,
-                involved_kind,
-                involved_name,
-                involved_namespace,
-                involved_api_version,
-                context: context.to_string(),
-            });
+            .or_insert((
+                last,
+                OverviewWarning {
+                    reason,
+                    count,
+                    last_seen: last_str,
+                    age,
+                    message,
+                    involved,
+                    involved_kind,
+                    involved_name,
+                    involved_namespace,
+                    involved_api_version,
+                    context: context.to_string(),
+                },
+            ));
     }
     let mut out: Vec<_> = by_reason.into_values().collect();
-    out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    // Newest warnings first; entries without a timestamp go last.
+    out.sort_by(|a, b| match (&b.0, &a.0) {
+        (Some(bt), Some(at)) => bt.cmp(at),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.1.last_seen.cmp(&a.1.last_seen),
+    });
     out.truncate(25);
-    out
+    out.into_iter().map(|(_, w)| w).collect()
 }
 
 fn collect_restarts(context: &str, pods: &[Pod]) -> Vec<OverviewRestart> {
-    let mut out = Vec::new();
+    let mut out: Vec<(Option<k8s_openapi::jiff::Timestamp>, OverviewRestart)> = Vec::new();
     for pod in pods {
         let ns = pod.namespace().unwrap_or_default();
         let name = pod.name_any();
@@ -478,21 +494,30 @@ fn collect_restarts(context: &str, pods: &[Pod]) -> Vec<OverviewRestart> {
                 .unwrap_or_else(|| "Restart".into());
             let exit_code = term.map(|t| t.exit_code);
             let finished = term.and_then(|t| t.finished_at.as_ref().map(|t| t.0));
-            out.push(OverviewRestart {
-                context: context.to_string(),
-                namespace: ns.clone(),
-                pod: name.clone(),
-                container: cs.name.clone(),
-                reason,
-                exit_code,
-                restart_count: restarts,
-                age: age_from(&finished),
-            });
+            out.push((
+                finished,
+                OverviewRestart {
+                    context: context.to_string(),
+                    namespace: ns.clone(),
+                    pod: name.clone(),
+                    container: cs.name.clone(),
+                    reason,
+                    exit_code,
+                    restart_count: restarts,
+                    age: age_from(&finished),
+                },
+            ));
         }
     }
-    out.sort_by_key(|a| std::cmp::Reverse(a.restart_count));
+    // Newest restarts first; entries without a timestamp go last.
+    out.sort_by(|a, b| match (&b.0, &a.0) {
+        (Some(bt), Some(at)) => bt.cmp(at),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.1.restart_count.cmp(&a.1.restart_count),
+    });
     out.truncate(30);
-    out
+    out.into_iter().map(|(_, r)| r).collect()
 }
 
 async fn collect_usage(

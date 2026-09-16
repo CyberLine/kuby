@@ -8,10 +8,11 @@ import {
   Show,
 } from "solid-js";
 import { api } from "../api/tauri";
-import type { K8sObject, NodeMetrics, NodeStats, PodMetrics } from "../types";
+import type { K8sObject, NodeEvent, NodeMetrics, NodeStats, PodMetrics } from "../types";
 import { getSamples, historyKey, pushSample } from "../utils/metricHistory";
 import {
   conditionTone,
+  isCertificateWarningEvent,
   nodeAddressByType,
   nodeAllocatable,
   nodeCapacity,
@@ -44,7 +45,6 @@ type Props = {
   node: Accessor<K8sObject>;
   pods: Accessor<K8sObject[]>;
   podsReady: boolean;
-  onBack: () => void;
   onNodeAction: (action: NodeDetailAction) => void;
   onOpenPod: (namespace: string, name: string) => void;
 };
@@ -68,14 +68,26 @@ export function NodeDetailView(props: Props) {
   const [memSamples, setMemSamples] = createSignal<MetricSample[]>([]);
   const [storageSamples, setStorageSamples] = createSignal<MetricSample[]>([]);
   const [podSamples, setPodSamples] = createSignal<MetricSample[]>([]);
+  const [nodeEvents, setNodeEvents] = createSignal<NodeEvent[]>([]);
 
   const name = createMemo(() => props.node().metadata?.name || props.node().name || "");
   const unschedulable = createMemo(() =>
     isNodeUnschedulable(props.node() as unknown as Record<string, unknown>),
   );
-  const statusLabels = createMemo(() =>
-    nodeStatusLabels(props.node() as unknown as Record<string, unknown>),
+  const certWarnings = createMemo(() => nodeEvents().filter(isCertificateWarningEvent));
+  const warningEvents = createMemo(() =>
+    nodeEvents().filter((ev) => (ev.type || "").toLowerCase() === "warning"),
   );
+  const statusLabels = createMemo(() => {
+    const labels = nodeStatusLabels(props.node() as unknown as Record<string, unknown>);
+    if (certWarnings().length > 0) {
+      const already = labels.some((l) => /certificate/i.test(l.text));
+      if (!already) {
+        labels.push({ text: "CertificateExpiration", tone: "warn" });
+      }
+    }
+    return labels;
+  });
   const info = createMemo(() => nodeSystemInfo(props.node() as unknown as Record<string, unknown>));
   const internalIp = createMemo(() =>
     nodeAddressByType(props.node() as unknown as Record<string, unknown>, "InternalIP"),
@@ -205,16 +217,18 @@ export function NodeDetailView(props: Props) {
 
   async function pollOnce(ctx: string, nodeName: string) {
     try {
-      const [allNodeMetrics, stats, allPodMetrics] = await Promise.all([
+      const [allNodeMetrics, stats, allPodMetrics, events] = await Promise.all([
         api.getNodeMetrics(ctx).catch(() => [] as NodeMetrics[]),
         api.getNodeStats(ctx, nodeName).catch(() => null),
         api.getPodMetrics(ctx, null).catch(() => [] as PodMetrics[]),
+        api.listNodeEvents(ctx, nodeName).catch(() => [] as NodeEvent[]),
       ]);
       const mine = allNodeMetrics.find((m) => m.name === nodeName) || null;
       setNodeMetrics(mine);
       setMetricsUnavailable(allNodeMetrics.length === 0);
       if (stats) setNodeStats(stats);
       setPodMetrics(allPodMetrics);
+      setNodeEvents(events);
 
       const cpuLim = parseCpuMillis(
         nodeResourceLimit(props.node() as unknown as Record<string, unknown>, "cpu"),
@@ -281,6 +295,7 @@ export function NodeDetailView(props: Props) {
     setMemSamples(getSamples(historyKey(ctx, nodeName, "memory")));
     setStorageSamples(getSamples(historyKey(ctx, nodeName, "storage")));
     setPodSamples(getSamples(historyKey(ctx, nodeName, "pods")));
+    setNodeEvents([]);
 
     let cancelled = false;
     void pollOnce(ctx, nodeName);
@@ -302,9 +317,6 @@ export function NodeDetailView(props: Props) {
   return (
     <section class="node-detail-overlay">
       <header class="node-detail-toolbar">
-        <button type="button" class="btn" onClick={() => props.onBack()}>
-          ← Back
-        </button>
         <div class="node-detail-toolbar-title">
           <ResourceIcon kind="Node" />
           <span class="mono">{name()}</span>
@@ -358,6 +370,23 @@ export function NodeDetailView(props: Props) {
             <p class="node-detail-os muted">{info().osImage}</p>
           </Show>
         </header>
+
+        <Show when={certWarnings().length}>
+          <For each={certWarnings()}>
+            {(ev) => (
+              <div class="banner warn node-metrics-banner node-cert-banner">
+                <strong>{ev.reason || "CertificateExpiration"}</strong>
+                <Show when={ev.age}>
+                  <span class="muted"> · {ev.age}</span>
+                </Show>
+                <Show when={ev.count > 1}>
+                  <span class="muted"> · ×{ev.count}</span>
+                </Show>
+                <p class="node-cert-banner-msg">{ev.message || "Node certificate is expiring soon"}</p>
+              </div>
+            )}
+          </For>
+        </Show>
 
         <Show when={metricsUnavailable()}>
           <div class="banner warn node-metrics-banner">
@@ -450,6 +479,44 @@ export function NodeDetailView(props: Props) {
           </Show>
         </section>
 
+        <Show when={warningEvents().length}>
+          <section class="node-warnings">
+            <div class="node-section-head">
+              <h3>Node warnings</h3>
+              <span class="muted">{warningEvents().length}</span>
+            </div>
+            <div class="node-info-block node-warnings-block">
+              <table class="meta-table">
+                <thead>
+                  <tr>
+                    <th>Reason</th>
+                    <th>Age</th>
+                    <th>Message</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={warningEvents()}>
+                    {(ev) => (
+                      <tr classList={{ "node-event-cert": isCertificateWarningEvent(ev) }}>
+                        <td>
+                          <span class="status-label warn">{ev.reason || "Warning"}</span>
+                          <Show when={ev.count > 1}>
+                            <span class="muted"> ×{ev.count}</span>
+                          </Show>
+                        </td>
+                        <td class="muted">{ev.age || "—"}</td>
+                        <td class="muted node-condition-msg" title={ev.message}>
+                          {ev.message || "—"}
+                        </td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </Show>
+
         <section class="node-info-grid">
           <div class="node-info-block">
             <h3>Conditions</h3>
@@ -460,6 +527,7 @@ export function NodeDetailView(props: Props) {
                     <th>Type</th>
                     <th>Status</th>
                     <th>Reason</th>
+                    <th>Message</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -470,8 +538,9 @@ export function NodeDetailView(props: Props) {
                           <span class={`status-label ${conditionTone(c)}`}>{c.type}</span>
                         </td>
                         <td class="mono">{c.status}</td>
-                        <td class="muted" title={c.message}>
-                          {c.reason || "—"}
+                        <td class="muted">{c.reason || "—"}</td>
+                        <td class="muted node-condition-msg" title={c.message}>
+                          {c.message || "—"}
                         </td>
                       </tr>
                     )}

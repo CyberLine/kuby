@@ -4,9 +4,19 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Platforms to build (manual runs upload workflow artifacts only, no GitHub Release)
+        type: choice
+        options:
+          - windows
+          - linux-and-windows
+          - all
+        default: windows
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -18,16 +28,24 @@ permissions:
 # Self-hosted Macs: skip GitHub Actions cache (pnpm / rust-cache). Remote cache
 # restore often hits "operation cannot be completed in timeout" and "pnpm cache
 # is not found", while the machine already has local toolchains/stores.
+#
+# Tag pushes (v*): full GitHub Release (linux → windows, macOS notarize).
+# workflow_dispatch: probe builds → Actions artifacts only (no release / latest.json).
 
 jobs:
   linux:
     name: Linux x64
+    if: >
+      github.event_name == 'push' ||
+      inputs.platforms == 'linux-and-windows' ||
+      inputs.platforms == 'all'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
 
       - name: Tag must match package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
@@ -70,6 +88,7 @@ jobs:
         run: pnpm sync-version
 
       - name: Build & upload release assets
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -84,19 +103,144 @@ jobs:
 
             - **macOS**: universal `.dmg` (Apple Silicon + Intel)
             - **Linux**: `.AppImage`, `.deb`, `.rpm`
+            - **Windows**: `.exe` (NSIS)
           releaseDraft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Build (manual probe)
+        if: github.event_name == 'workflow_dispatch'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          NO_STRIP: true
+        with:
+          uploadUpdaterJson: false
+
+      - name: Upload Linux workflow artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles-${{ github.run_id }}
+          path: |
+            src-tauri/target/release/bundle/appimage/
+            src-tauri/target/release/bundle/deb/
+            src-tauri/target/release/bundle/rpm/
+          if-no-files-found: error
+          retention-days: 5
+
+  windows:
+    name: Windows x64
+    needs: [linux]
+    # Tag releases wait for Linux. Manual "windows" skips Linux (needs → skipped).
+    if: >
+      always() && (
+        (github.event_name == 'push' && needs.linux.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && inputs.platforms == 'windows') ||
+        (github.event_name == 'workflow_dispatch' &&
+          (inputs.platforms == 'linux-and-windows' || inputs.platforms == 'all') &&
+          needs.linux.result == 'success')
+      )
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tag must match package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${pkg}"
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-windows-x64
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Sync Cargo.toml version
+        run: pnpm sync-version
+
+      - name: Build & upload release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: Kuby ${{ github.ref_name }}
+          releaseBody: |
+            Downloads for **${{ github.ref_name }}**:
+
+            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
+            - **Linux**: `.AppImage`, `.deb`, `.rpm`
+            - **Windows**: `.exe` (NSIS)
+          releaseDraft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # Linux already wrote latest.json; we merge windows-x86_64 below.
+          uploadUpdaterJson: false
+          updaterJsonPreferNsis: true
+
+      - name: Merge Windows updater into latest.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          bash .github/scripts/publish-windows-release.sh \
+            src-tauri/target/release/bundle
+
+      - name: Build (manual probe)
+        if: github.event_name == 'workflow_dispatch'
+        uses: tauri-apps/tauri-action@v1
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          uploadUpdaterJson: false
+          updaterJsonPreferNsis: true
+
+      - name: Upload Windows workflow artifacts
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis-${{ github.run_id }}
+          path: src-tauri/target/release/bundle/nsis/
+          if-no-files-found: error
+          retention-days: 5
 
   # Signed build only (no Apple notarization). Upload bundles as workflow
   # artifacts so notarization can retry without a full universal rebuild.
   macos-build:
     name: macOS build
+    if: github.event_name == 'push' || inputs.platforms == 'all'
     runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
       - name: Tag must match package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
@@ -147,7 +291,7 @@ jobs:
       - name: Upload signed macOS bundles
         uses: actions/upload-artifact@v4
         with:
-          name: macos-bundles-${{ github.ref_name }}
+          name: macos-bundles-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref_name }}
           path: |
             src-tauri/target/universal-apple-darwin/release/bundle/macos/
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
@@ -162,6 +306,8 @@ jobs:
 
   macos-notarize:
     name: macOS notarize & upload
+    # Notarize + GitHub Release only for version tags (not manual probes).
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: macos-build
     runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     # Apple upload + queue can exceed an hour on slow links; retries are in-script.

@@ -7,6 +7,7 @@ import type {
   DiscoveredResource,
   LonghornOverview,
   NamespaceListResult,
+  NodeEvent,
   NodeMetrics,
   NodeStats,
   PodMetrics,
@@ -148,6 +149,8 @@ export const api = {
   getNodeMetrics: (context: string) => invoke<NodeMetrics[]>("get_node_metrics", { context }),
   getNodeStats: (context: string, name: string) =>
     invoke<NodeStats>("get_node_stats", { context, name }),
+  listNodeEvents: (context: string, name: string) =>
+    invoke<NodeEvent[]>("list_node_events", { context, name }),
   getWorkloadOverview: (context: string, namespaces: string[], usageThreshold?: number) =>
     isDemoMode()
       ? Promise.resolve(demoWorkloadOverview(context))

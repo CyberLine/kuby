@@ -27,7 +27,6 @@ type Props = {
   namespace: string;
   objects: K8sObject[];
   loading?: boolean;
-  onBack: () => void;
   onOpenResource: (target: GraphOpenTarget) => void;
 };
 
@@ -378,9 +377,6 @@ export function NamespaceGraphView(props: Props) {
   return (
     <section class="ns-graph">
       <header class="ns-graph-toolbar">
-        <button type="button" class="btn" onClick={() => props.onBack()}>
-          ← Back
-        </button>
         <div class="ns-graph-title">
           <ResourceIcon kind="Namespace" />
           <span>

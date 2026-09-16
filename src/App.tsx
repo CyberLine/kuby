@@ -94,6 +94,13 @@ import {
   nodeStatusLabels,
   nodeStatusText,
 } from "./utils/nodeStatus";
+import { buildBreadcrumbs, type BreadcrumbSegment } from "./navigation/breadcrumbs";
+import {
+  createNavHistory,
+  locationLabel,
+  type NavLocation,
+  type NavMode,
+} from "./navigation/history";
 import { extractRelations, groupRelations, type RelationLink } from "./utils/relations";
 import {
   canRollbackReplicaSet,
@@ -224,6 +231,8 @@ function App() {
   const [detailWidth, setDetailWidth] = createSignal<number | null>(readDetailWidth());
   const [columnPrefs, setColumnPrefs] = createSignal<ColumnPrefs>(readColumnPrefs());
   const [columnsMenuOpen, setColumnsMenuOpen] = createSignal(false);
+  const navHistory = createNavHistory();
+  let applyingNav = false;
   let statusTimer: number | undefined;
   let contentEl!: HTMLDivElement;
   let detailPaneEl: HTMLElement | undefined;
@@ -504,6 +513,7 @@ function App() {
 
   /** Always land on Overview after connect / cluster switch. */
   async function goToOverview() {
+    navHistory.clear();
     if (store.visualizeNamespace()) {
       await store.stopGraphWatches();
     }
@@ -514,6 +524,164 @@ function App() {
     setPanel("detail");
     setPendingSelectName(null);
     setCtxMenu(null);
+  }
+
+  function snapshotLocation(): NavLocation {
+    const ctx = store.selectedContext();
+    const kind = store.selectedKind();
+    const obj = store.selectedObject();
+    const vis = store.visualizeNamespace();
+    const node = viewingNodeName();
+    let mode: NavMode = "list";
+    if (vis) mode = "visualize";
+    else if (node) mode = "node";
+    else if (kind.kind === "Overview") mode = "overview";
+    else if (kind.kind === "Longhorn") mode = "longhorn";
+    else if (store.selectedObjectKey()) mode = "detail";
+
+    const labels = store.labelFilter();
+    const owner = store.ownerFilter();
+    return {
+      context: ctx,
+      namespaces: [...(store.selectedNamespaces[ctx] || [])],
+      kind: kind.kind,
+      apiVersion: kind.apiVersion,
+      mode,
+      objectKey: store.selectedObjectKey(),
+      objectName: obj ? objectName(obj) : node || null,
+      viewingNodeName: node,
+      visualizeNamespace: vis,
+      searchQuery: store.searchQuery(),
+      labelFilter: labels ? { ...labels } : null,
+      ownerFilter: owner ? { ...owner } : null,
+      statusFilter: store.statusFilter(),
+    };
+  }
+
+  async function applyLocation(loc: NavLocation) {
+    applyingNav = true;
+    try {
+      if (store.visualizeNamespace() && loc.mode !== "visualize") {
+        await store.stopGraphWatches();
+      }
+
+      const ctx = loc.context || store.selectedContext();
+      if (loc.namespaces?.length) {
+        store.setSelectedNamespaces(ctx, [...loc.namespaces]);
+      }
+
+      store.setSelectedKind({ apiVersion: loc.apiVersion, kind: loc.kind });
+      store.setStatusFilter(loc.statusFilter ?? null);
+      store.setLabelFilter(loc.labelFilter ? { ...loc.labelFilter } : null);
+      store.setOwnerFilter(loc.ownerFilter ? { ...loc.ownerFilter } : null);
+      store.setSearchQuery(loc.searchQuery || "");
+
+      if (loc.mode === "visualize" && loc.visualizeNamespace) {
+        setViewingNodeName(null);
+        store.setSelectedObjectKey(null);
+        setPendingSelectName(null);
+        await store.startGraphWatches(loc.visualizeNamespace);
+        setPanel("detail");
+        return;
+      }
+
+      if (loc.mode === "node" && loc.viewingNodeName) {
+        store.setSelectedObjectKey(null);
+        setViewingNodeName(loc.viewingNodeName);
+        setPendingSelectName(null);
+        setPanel("detail");
+        return;
+      }
+
+      setViewingNodeName(null);
+
+      if (loc.mode === "detail" && (loc.objectKey || loc.objectName)) {
+        if (loc.objectKey) {
+          store.setSelectedObjectKey(loc.objectKey);
+          setPendingSelectName(null);
+        } else {
+          store.setSelectedObjectKey(null);
+          setPendingSelectName(loc.objectName || null);
+        }
+      } else {
+        store.setSelectedObjectKey(null);
+        setPendingSelectName(null);
+      }
+      setPanel("detail");
+    } finally {
+      applyingNav = false;
+    }
+  }
+
+  function pushCurrent() {
+    if (applyingNav) return;
+    navHistory.push(snapshotLocation());
+  }
+
+  async function goBack() {
+    const loc = navHistory.back();
+    if (loc) {
+      await applyLocation(loc);
+      return;
+    }
+    if (store.visualizeNamespace()) {
+      await store.stopGraphWatches();
+      return;
+    }
+    if (viewingNodeName()) {
+      setViewingNodeName(null);
+      return;
+    }
+    if (store.selectedObjectKey()) {
+      closeDetailPanel();
+    }
+  }
+
+  const canGoBack = createMemo(
+    () =>
+      navHistory.canBack() ||
+      Boolean(store.visualizeNamespace()) ||
+      Boolean(viewingNodeName()) ||
+      Boolean(store.selectedObjectKey()),
+  );
+
+  const backButtonTitle = createMemo(() => {
+    const peek = navHistory.peekBack();
+    if (peek) return `Back to ${locationLabel(peek)}`;
+    if (store.visualizeNamespace()) return "Leave visualize";
+    if (viewingNodeName()) return "Back to Nodes";
+    if (store.selectedObjectKey()) return "Close detail";
+    return "Back";
+  });
+
+  const currentNavLocation = createMemo(() => snapshotLocation());
+
+  const breadcrumbSegments = createMemo(() => buildBreadcrumbs(currentNavLocation()));
+
+  function onBreadcrumb(seg: BreadcrumbSegment) {
+    if (!seg.action) return;
+    if (seg.action === "overview") {
+      void (async () => {
+        if (store.visualizeNamespace()) await store.stopGraphWatches();
+        setViewingNodeName(null);
+        store.clearListFilters();
+        store.setSelectedObjectKey(null);
+        store.setSelectedKind({ apiVersion: "kuby.io/overview", kind: "Overview" });
+        setPendingSelectName(null);
+        setPanel("detail");
+      })();
+      return;
+    }
+    if (seg.action === "close-visualize" || seg.action === "close-node") {
+      void goBack();
+      return;
+    }
+    if (seg.action === "kind-list") {
+      store.setSelectedObjectKey(null);
+      setPendingSelectName(null);
+      store.clearListFilters();
+      setPanel("detail");
+    }
   }
 
   createEffect(() => {
@@ -578,10 +746,6 @@ function App() {
     return objects().find((o) => objectName(o) === name) || null;
   });
 
-  function closeNodeDetail() {
-    setViewingNodeName(null);
-  }
-
   function openNodeDetail(obj: K8sObject) {
     const name = objectName(obj);
     if (!name) return;
@@ -638,6 +802,11 @@ function App() {
     if (!pending) return;
     const match = objects().find((o) => objectName(o) === pending);
     if (match) {
+      if (isCoreNode(store.selectedKind().kind, store.selectedKind().apiVersion)) {
+        openNodeDetail(match);
+        setPendingSelectName(null);
+        return;
+      }
       store.setSelectedObjectKey(objectKey(match));
       setPanel(defaultDetailPanel(match));
       setPendingSelectName(null);
@@ -645,39 +814,75 @@ function App() {
   });
 
   function openRelation(link: RelationLink) {
-    closeNodeDetail();
-    store.clearListFilters();
-    store.setSelectedObjectKey(null);
-    store.setSelectedKind({ apiVersion: link.apiVersion, kind: link.kind });
-    if (link.namespace) {
-      store.setSelectedNamespaces(store.selectedContext(), [link.namespace]);
-    }
-    if (link.labelSelector) {
-      store.setLabelFilter({ ...link.labelSelector });
-    }
-    if (link.owner) {
-      store.setOwnerFilter({ ...link.owner });
-    }
-    if (link.name && !link.labelSelector && !link.owner) {
-      store.setSearchQuery(link.name);
-      setPendingSelectName(link.name);
-    } else {
-      setPendingSelectName(null);
-    }
-    setPanel("detail");
+    pushCurrent();
+    void (async () => {
+      if (store.visualizeNamespace()) {
+        await store.stopGraphWatches();
+      }
+      store.clearListFilters();
+      store.setSelectedObjectKey(null);
+
+      if (isCoreNode(link.kind, link.apiVersion) && link.name) {
+        store.setSelectedKind({ apiVersion: link.apiVersion, kind: link.kind });
+        setViewingNodeName(link.name);
+        setPendingSelectName(null);
+        setPanel("detail");
+        return;
+      }
+
+      setViewingNodeName(null);
+      store.setSelectedKind({ apiVersion: link.apiVersion, kind: link.kind });
+      if (link.namespace) {
+        store.setSelectedNamespaces(store.selectedContext(), [link.namespace]);
+      }
+      if (link.labelSelector) {
+        store.setLabelFilter({ ...link.labelSelector });
+      }
+      if (link.owner) {
+        store.setOwnerFilter({ ...link.owner });
+      }
+      if (link.name && !link.labelSelector && !link.owner) {
+        store.setSearchQuery(link.name);
+        setPendingSelectName(link.name);
+      } else {
+        setPendingSelectName(null);
+      }
+      setPanel("detail");
+    })();
+  }
+
+  function openResourceTarget(target: {
+    kind?: string;
+    apiVersion?: string | null;
+    namespace?: string | null;
+    name?: string;
+  }) {
+    if (!target.kind || !target.name) return;
+    const apiVersion = resolveResourceApiVersion(
+      target.kind,
+      target.apiVersion,
+      store.apiResources[store.selectedContext()] || [],
+    );
+    if (!apiVersion) return;
+    openRelation({
+      id: `res:${target.namespace || ""}/${target.kind}/${target.name}`,
+      group: "Resource",
+      title: target.name,
+      apiVersion,
+      kind: target.kind,
+      namespace: target.namespace,
+      name: target.name,
+    });
   }
 
   async function openVisualize(namespace: string) {
     if (!namespace || namespace === "*") return;
+    pushCurrent();
     setCtxMenu(null);
     setViewingNodeName(null);
     store.setSelectedObjectKey(null);
     store.setSelectedNamespaces(store.selectedContext(), [namespace]);
     await store.startGraphWatches(namespace);
-  }
-
-  async function closeVisualize() {
-    await store.stopGraphWatches();
   }
 
   function relationChipLabel(): string | null {
@@ -926,11 +1131,27 @@ function App() {
     setCheckedKeys(next);
   }
 
+  function selectAllVisible() {
+    setChecked(new Set(sortedObjects().map((o) => objectKey(o))));
+  }
+
   function toggleChecked(key: string) {
     const next = new Set(checkedKeys());
     if (next.has(key)) next.delete(key);
     else next.add(key);
     setChecked(next);
+  }
+
+  function isTypingTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    const tag = target.tagName;
+    return (
+      tag === "INPUT" ||
+      tag === "TEXTAREA" ||
+      tag === "SELECT" ||
+      target.isContentEditable ||
+      Boolean(target.closest(".cm-editor, .xterm"))
+    );
   }
 
   function selectRange(from: number, to: number) {
@@ -1539,27 +1760,49 @@ function App() {
       }
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
-      if (showAbout()) return;
-      const target = e.target as HTMLElement | null;
-      if (
-        target &&
-        (target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable)
-      ) {
+      if (showAbout() || showWelcome()) return;
+
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "a") {
+        if (isTypingTarget(e.target)) return;
+        if (menuLocked() || isPseudoKind(store.selectedKind().kind)) return;
+        if (!sortedObjects().length) return;
+        e.preventDefault();
+        selectAllVisible();
         return;
       }
-      if (columnsMenuOpen()) {
-        setColumnsMenuOpen(false);
+
+      if (e.key === "Escape") {
+        if (isTypingTarget(e.target)) return;
+        if (columnsMenuOpen()) {
+          setColumnsMenuOpen(false);
+          return;
+        }
+        if (ctxMenu()) {
+          setCtxMenu(null);
+          return;
+        }
+        if (store.visualizeNamespace()) {
+          e.preventDefault();
+          void store.stopGraphWatches();
+          return;
+        }
+        if (viewingNodeName()) {
+          e.preventDefault();
+          setViewingNodeName(null);
+          return;
+        }
+        if (store.selectedObjectKey()) {
+          closeDetailPanel();
+        }
         return;
       }
-      if (ctxMenu()) {
-        setCtxMenu(null);
-        return;
+
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key === "ArrowLeft") {
+        if (isTypingTarget(e.target)) return;
+        if (!canGoBack()) return;
+        e.preventDefault();
+        void goBack();
       }
-      if (store.selectedObjectKey()) closeDetailPanel();
     };
     window.addEventListener("click", close);
     window.addEventListener("blur", close);
@@ -1761,36 +2004,55 @@ function App() {
           <main class="main">
             <header class="topbar">
               <div class="topbar-left">
-                <h1 class="topbar-title">
-                  <Show
-                    when={store.visualizeNamespace()}
-                    fallback={
-                      <Show
-                        when={viewingNodeName()}
-                        fallback={
-                          <>
-                            <ResourceIcon kind={store.selectedKind().kind} />
-                            {store.selectedKind().kind}
-                          </>
-                        }
-                      >
-                        {(nodeName) => (
-                          <>
-                            <ResourceIcon kind="Node" />
-                            Node · {nodeName()}
-                          </>
-                        )}
-                      </Show>
-                    }
-                  >
-                    {(ns) => (
+                <button
+                  type="button"
+                  class="btn ghost nav-back"
+                  disabled={!canGoBack()}
+                  title={backButtonTitle()}
+                  aria-label={backButtonTitle()}
+                  onClick={() => void goBack()}
+                >
+                  ← Back
+                </button>
+                <nav class="nav-crumbs" aria-label="Breadcrumb">
+                  <For each={breadcrumbSegments()}>
+                    {(seg, i) => (
                       <>
-                        <ResourceIcon kind="Namespace" />
-                        Visualize · {ns()}
+                        <Show when={i() > 0}>
+                          <span class="nav-crumb-sep" aria-hidden="true">
+                            ›
+                          </span>
+                        </Show>
+                        <Show
+                          when={seg.action}
+                          fallback={
+                            <span class="nav-crumb current" title={seg.title}>
+                              <Show when={seg.id === "kind" || seg.id === "visualize"}>
+                                <ResourceIcon
+                                  kind={
+                                    seg.id === "visualize"
+                                      ? "Namespace"
+                                      : store.selectedKind().kind
+                                  }
+                                />
+                              </Show>
+                              {seg.label}
+                            </span>
+                          }
+                        >
+                          <button
+                            type="button"
+                            class="nav-crumb link"
+                            title={seg.title}
+                            onClick={() => onBreadcrumb(seg)}
+                          >
+                            {seg.label}
+                          </button>
+                        </Show>
                       </>
                     )}
-                  </Show>
-                </h1>
+                  </For>
+                </nav>
                 <Show when={!menuLocked() && !isPseudoKind(store.selectedKind().kind)}>
                   <span class="muted">{objects().length} items</span>
                 </Show>
@@ -1979,7 +2241,7 @@ function App() {
                                           class="row head"
                                           style={{ "grid-template-columns": listGridTemplate() }}
                                         >
-                                          <label class="row-check" title="Select all">
+                                          <label class="row-check" title="Select all (Ctrl/⌘A)">
                                             <input
                                               type="checkbox"
                                               checked={
@@ -1990,11 +2252,7 @@ function App() {
                                               }
                                               onChange={(e) => {
                                                 if (e.currentTarget.checked) {
-                                                  setChecked(
-                                                    new Set(
-                                                      sortedObjects().map((o) => objectKey(o)),
-                                                    ),
-                                                  );
+                                                  selectAllVisible();
                                                 } else {
                                                   clearChecked();
                                                 }
@@ -2364,7 +2622,33 @@ function App() {
                                                 </Show>
                                                 <Show when={listColumnCaps().node}>
                                                   <dt>Node</dt>
-                                                  <dd class="mono">{podNodeName(obj()) || "—"}</dd>
+                                                  <dd>
+                                                    <Show
+                                                      when={podNodeName(obj())}
+                                                      fallback={<span class="mono muted">—</span>}
+                                                    >
+                                                      {(nodeName) => (
+                                                        <button
+                                                          type="button"
+                                                          class="linkish mono"
+                                                          title={`Open Node/${nodeName()}`}
+                                                          onClick={() =>
+                                                            openRelation({
+                                                              id: `pod-node-${nodeName()}`,
+                                                              group: "Cluster",
+                                                              title: `Node/${nodeName()}`,
+                                                              apiVersion: "v1",
+                                                              kind: "Node",
+                                                              namespace: null,
+                                                              name: nodeName(),
+                                                            })
+                                                          }
+                                                        >
+                                                          {nodeName()}
+                                                        </button>
+                                                      )}
+                                                    </Show>
+                                                  </dd>
                                                 </Show>
                                                 <dt>UID</dt>
                                                 <dd class="mono">{objectKey(obj())}</dd>
@@ -2591,29 +2875,7 @@ function App() {
                           >
                             <LonghornOverviewView
                               context={store.selectedContext()}
-                              onOpenResource={(target) => {
-                                const apiVersion = resolveResourceApiVersion(
-                                  target.kind,
-                                  target.apiVersion,
-                                  store.apiResources[store.selectedContext()] || [],
-                                );
-                                if (!apiVersion || !target.kind || !target.name) return;
-                                store.clearListFilters();
-                                store.setSelectedObjectKey(null);
-                                setViewingNodeName(null);
-                                store.setSelectedKind({
-                                  apiVersion,
-                                  kind: target.kind,
-                                });
-                                if (target.namespace) {
-                                  store.setSelectedNamespaces(store.selectedContext(), [
-                                    target.namespace,
-                                  ]);
-                                }
-                                store.setSearchQuery(target.name);
-                                setPendingSelectName(target.name);
-                                setPanel("detail");
-                              }}
+                              onOpenResource={(target) => openResourceTarget(target)}
                               onOpenSegment={(cardKind, statusLabel) => {
                                 const ctx = store.selectedContext();
                                 setViewingNodeName(null);
@@ -2654,29 +2916,7 @@ function App() {
                           namespaces={
                             store.selectedNamespaces[store.selectedContext()] || ["default"]
                           }
-                          onOpenResource={(target) => {
-                            const apiVersion = resolveResourceApiVersion(
-                              target.kind,
-                              target.apiVersion,
-                              store.apiResources[store.selectedContext()] || [],
-                            );
-                            if (!apiVersion || !target.kind || !target.name) return;
-                            store.clearListFilters();
-                            store.setSelectedObjectKey(null);
-                            setViewingNodeName(null);
-                            store.setSelectedKind({
-                              apiVersion,
-                              kind: target.kind,
-                            });
-                            if (target.namespace) {
-                              store.setSelectedNamespaces(store.selectedContext(), [
-                                target.namespace,
-                              ]);
-                            }
-                            store.setSearchQuery(target.name);
-                            setPendingSelectName(target.name);
-                            setPanel("detail");
-                          }}
+                          onOpenResource={(target) => openResourceTarget(target)}
                           onOpenSegment={(cardKind, statusLabel) => {
                             const target = overviewKindToResource(cardKind);
                             if (!target) return;
@@ -2696,9 +2936,6 @@ function App() {
                         fallback={
                           <section class="node-detail-overlay">
                             <header class="node-detail-toolbar">
-                              <button type="button" class="btn" onClick={closeNodeDetail}>
-                                ← Back
-                              </button>
                               <div class="node-detail-toolbar-title">
                                 <ResourceIcon kind="Node" />
                                 <span class="mono">{viewingNodeName()}</span>
@@ -2716,14 +2953,12 @@ function App() {
                             node={node}
                             pods={() => store.podsOnNode(objectName(node()))}
                             podsReady={store.nodePodCountsReady()}
-                            onBack={closeNodeDetail}
                             onNodeAction={(action) => {
                               const obj = viewingNode();
                               if (!obj) return;
                               void runNodeAction(action, [objectKey(obj)]);
                             }}
                             onOpenPod={(namespace, podName) => {
-                              closeNodeDetail();
                               openRelation({
                                 id: `pod:${namespace}/${podName}`,
                                 group: "Workload",
@@ -2746,30 +2981,7 @@ function App() {
                     namespace={ns()}
                     objects={store.graphObjects()}
                     loading={store.graphLoading()}
-                    onBack={() => void closeVisualize()}
-                    onOpenResource={(target) => {
-                      void (async () => {
-                        await closeVisualize();
-                        const apiVersion = resolveResourceApiVersion(
-                          target.kind,
-                          target.apiVersion,
-                          store.apiResources[store.selectedContext()] || [],
-                        );
-                        if (!apiVersion || !target.kind || !target.name) return;
-                        store.clearListFilters();
-                        store.setSelectedObjectKey(null);
-                        store.setSelectedKind({
-                          apiVersion,
-                          kind: target.kind,
-                        });
-                        if (target.namespace) {
-                          store.setSelectedNamespaces(store.selectedContext(), [target.namespace]);
-                        }
-                        store.setSearchQuery(target.name);
-                        setPendingSelectName(target.name);
-                        setPanel("detail");
-                      })();
-                    }}
+                    onOpenResource={(target) => openResourceTarget(target)}
                   />
                 )}
               </Show>

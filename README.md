@@ -15,7 +15,7 @@ Native multi-cluster Kubernetes desktop client built with **Tauri 2**, **Rust (`
 - Side-by-side YAML diff + metrics.k8s.io CPU/RAM
 - Auth summaries for OIDC/kubelogin, EKS/GKE/AKS exec plugins, client certs, Teleport
 - Virtualized lists for large clusters
-- Bundling targets: macOS app/dmg, Linux AppImage/deb/rpm + updater plugin
+- Bundling targets: macOS app/dmg, Linux AppImage/deb/rpm, Windows NSIS + updater plugin
 
 ## Develop
 
@@ -69,6 +69,18 @@ sudo apt install -y \
 ```
 
 If `pnpm tauri dev` fails with `No such file or directory` on `cargo metadata`, `cargo` is missing from `PATH` — open a new terminal or run `source "$HOME/.cargo/env"`.
+
+### Windows tooling
+
+Use [rustup](https://rustup.rs/) (MSVC toolchain), [Node 22+](https://nodejs.org/), and [pnpm 11](https://pnpm.io/). WebView2 is required (preinstalled on recent Windows 10/11 and on GitHub `windows-latest`).
+
+```powershell
+winget install Rustlang.Rustup
+winget install OpenJS.NodeJS.LTS
+corepack enable
+pnpm install
+pnpm tauri dev
+```
 
 ## Quality and security
 

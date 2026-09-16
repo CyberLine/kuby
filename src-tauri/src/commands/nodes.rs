@@ -1,14 +1,91 @@
 use std::time::{Duration, Instant};
 
-use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::api::core::v1::{Event, Node, Pod};
 use kube::api::{Api, EvictParams, ListParams, Patch, PatchParams};
 use kube::ResourceExt;
+use serde::Serialize;
 use serde_json::json;
 use tauri::State;
 use tokio::time::sleep;
 
 use crate::error::{KubyError, Result};
 use crate::AppState;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeEvent {
+    /// Normal | Warning
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub reason: String,
+    pub message: String,
+    pub count: u32,
+    pub last_seen: String,
+    pub age: String,
+}
+
+fn event_age(ts: &Option<k8s_openapi::jiff::Timestamp>) -> String {
+    let Some(t) = ts.as_ref() else {
+        return "—".into();
+    };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let sec = (now_secs - t.as_second()).max(0);
+    if sec < 60 {
+        format!("{sec}s ago")
+    } else if sec < 3600 {
+        format!("{}m ago", sec / 60)
+    } else if sec < 86400 {
+        format!("{}h ago", sec / 3600)
+    } else {
+        format!("{}d ago", sec / 86400)
+    }
+}
+
+/// Events for a Node (e.g. CertificateExpiration), matching kubectl describe.
+#[tauri::command]
+pub async fn list_node_events(
+    state: State<'_, AppState>,
+    context: String,
+    name: String,
+) -> Result<Vec<NodeEvent>> {
+    let client = state.manager.client(&context)?;
+    let api: Api<Event> = Api::all(client);
+    // Node names are DNS labels; keep the field selector free of commas/=.
+    let safe_name = name.replace([',', '='], "");
+    let lp = ListParams::default().fields(&format!(
+        "involvedObject.kind=Node,involvedObject.name={safe_name}"
+    ));
+    let list = api.list(&lp).await?;
+
+    let mut out: Vec<NodeEvent> = list
+        .items
+        .into_iter()
+        .map(|ev| {
+            let last = ev
+                .last_timestamp
+                .as_ref()
+                .map(|t| t.0)
+                .or_else(|| ev.event_time.as_ref().map(|t| t.0))
+                .or_else(|| ev.metadata.creation_timestamp.as_ref().map(|t| t.0));
+            let last_seen = last.map(|t| t.to_string()).unwrap_or_default();
+            NodeEvent {
+                type_: ev.type_.unwrap_or_default(),
+                reason: ev.reason.unwrap_or_default(),
+                message: ev.message.unwrap_or_default(),
+                count: ev.count.unwrap_or(1) as u32,
+                last_seen,
+                age: event_age(&last),
+            }
+        })
+        .collect();
+
+    out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+    out.truncate(50);
+    Ok(out)
+}
 
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
 const EVICT_RETRY_DELAY: Duration = Duration::from_secs(5);

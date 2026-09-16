@@ -24,6 +24,20 @@ pnpm tauri build
 
 Artifacts land in `src-tauri/target/release/bundle/`.
 
+## Windows packages
+
+`bundle.targets` includes `nsis` (setup `.exe`). Build on Windows (or CI) with:
+
+```bash
+pnpm tauri build
+```
+
+Artifacts land under `src-tauri/target/release/bundle/nsis/`.
+
+There is **no Authenticode / SmartScreen signing** yet — first launches may show a Windows SmartScreen warning. The Tauri updater still verifies packages with the existing minisign key.
+
+On Start Menu / Explorer launches, Kuby merges User + Machine `PATH` from the registry (plus common Scoop/Chocolatey/cargo dirs) so kube exec plugins stay findable. Restart the app after installing new CLIs into PATH.
+
 ## Versioning
 
 Single source of truth: root `package.json` → `version`.
@@ -43,7 +57,7 @@ Bump with e.g. `pnpm version patch` (or edit `package.json`), then `pnpm sync-ve
 
 ## GitHub Releases
 
-Push a version tag that matches `package.json` (e.g. `v0.3.0`). Only `v*` tags run the Release workflow; `main` and other branches do not.
+Push a version tag that matches `package.json` (e.g. `v0.3.0`). Only `v*` tags publish a GitHub Release; `main` and other branches do not.
 
 ```bash
 # after bumping package.json version
@@ -53,7 +67,11 @@ git tag v0.3.0
 git push origin main --tags
 ```
 
-Builds: macOS universal (`.dmg`) and Linux (`.AppImage`, `.deb`, `.rpm`).
+Builds: macOS universal (`.dmg`), Linux (`.AppImage`, `.deb`, `.rpm`), and Windows (NSIS `.exe`).
+
+### Manual probe builds (`workflow_dispatch`)
+
+In GitHub → Actions → **Release** → **Run workflow**, choose platforms (`windows` by default). Manual runs upload **workflow artifacts** only (no GitHub Release, no `latest.json` update). Use this to smoke-test NSIS on `windows-latest` before tagging.
 
 
 ## Performance
