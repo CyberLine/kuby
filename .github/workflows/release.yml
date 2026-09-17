@@ -304,7 +304,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Download Windows NSIS bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: windows-nsis-${{ github.ref_name }}
           path: src-tauri/target/release/bundle/nsis
@@ -426,7 +426,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Download signed macOS bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: macos-bundles-${{ github.ref_name }}
           path: src-tauri/target/universal-apple-darwin/release/bundle
