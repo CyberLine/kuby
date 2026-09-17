@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Import Developer ID cert into a temporary keychain usable by headless codesign.
-# Avoids errSecInternalComponent on self-hosted macOS runners (Tauri's own
+# Avoids errSecInternalComponent on headless CI macOS runners (Tauri's own
 # temp keychain import often lacks -A / partition-list for non-interactive use).
 set -euo pipefail
 

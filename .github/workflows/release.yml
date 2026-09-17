@@ -22,17 +22,13 @@ concurrency:
 permissions:
   contents: write
 
-# macOS: vars.MACOS_RUNNER = self-hosted | macos-latest (default: self-hosted).
-# GITHUB_TOKEN cannot list runners (403) — no automatic online-detection.
+# macOS jobs use GitHub-hosted macos-latest. Notarization preflights Apple
+# (appstoreconnect.apple.com) and aborts immediately if the Notary API is down
+# or unreachable from the runner.
 #
-# Self-hosted Macs: skip GitHub Actions cache (pnpm / rust-cache). Remote cache
-# restore often hits "operation cannot be completed in timeout" and "pnpm cache
-# is not found", while the machine already has local toolchains/stores.
-#
-# Tag pushes (v*): draft GitHub Release → linux/windows/macOS build in parallel →
-# updater JSON merges (after linux) → publish.
-# latest.json is a single file, so Windows/macOS *merges* wait for Linux to write
-# it first. The compiles themselves do not.
+# Tag pushes (v*): draft GitHub Release → linux/windows/macOS upload binaries
+# in parallel → publish lists assets, writes latest.json once, then undrafts.
+# Platform jobs must not upload latest.json (one writer, no merge/clobber races).
 # Immutable releases freeze assets at publish time, so the release stays draft
 # until every platform (and latest.json) is attached.
 # workflow_dispatch: probe builds → Actions artifacts only (no release / latest.json).
@@ -163,6 +159,8 @@ jobs:
           # Stay draft until the publish job. Immutable releases reject uploads after publish.
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # latest.json is generated once in publish from the full asset list.
+          uploadUpdaterJson: false
 
       - name: Build (manual probe)
         if: github.event_name == 'workflow_dispatch'
@@ -256,7 +254,6 @@ jobs:
           # Stay draft until the publish job. Do not undraft here or later jobs cannot upload.
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          # latest.json is merged after Linux in windows-updater (avoids clobber).
           uploadUpdaterJson: false
           updaterJsonPreferNsis: true
 
@@ -278,16 +275,14 @@ jobs:
           if-no-files-found: error
           retention-days: 5
 
-  # latest.json is one file; merge Windows after Linux has written it.
   windows-updater:
-    name: Merge Windows updater
-    needs: [windows, linux]
+    name: Upload Windows assets
+    needs: [windows]
     if: >
       always() &&
       !cancelled() &&
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.windows.result == 'success' &&
-      needs.linux.result == 'success'
+      needs.windows.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -309,7 +304,7 @@ jobs:
           name: windows-nsis-${{ github.ref_name }}
           path: src-tauri/target/release/bundle/nsis
 
-      - name: Merge Windows updater into latest.json
+      - name: Upload Windows release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -328,7 +323,7 @@ jobs:
         (github.event_name == 'push' && needs.create-draft.result == 'success') ||
         (github.event_name == 'workflow_dispatch' && inputs.platforms == 'all')
       )
-    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
+    runs-on: macos-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -348,10 +343,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-macos-universal
 
       - name: Install frontend deps
         run: pnpm install --frozen-lockfile
@@ -371,13 +372,13 @@ jobs:
         env:
           # Use the keychain from the setup step. Do NOT pass APPLE_CERTIFICATE
           # here — Tauri would create another temp keychain and hit
-          # errSecInternalComponent on self-hosted runners.
+          # errSecInternalComponent on headless CI runners.
           APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # tauri-action defaults this to true, which forces Finder AppleScript
-          # even when CI=true. That fails on many self-hosted Macs → false so
-          # the bundler passes --skip-jenkins and builds a plain DMG.
+          # even when CI=true. GitHub-hosted Macs have no Finder session →
+          # false so the bundler passes --skip-jenkins and builds a plain DMG.
           TAURI_BUNDLER_DMG_IGNORE_CI: "false"
         with:
           args: --target universal-apple-darwin
@@ -401,25 +402,31 @@ jobs:
   macos-notarize:
     name: macOS notarize & upload
     # Notarize + GitHub Release only for version tags (not manual probes).
-    # Wait for Linux so the draft exists and tauri-action does not clobber latest.json.
-    needs: [macos-build, linux]
+    needs: [macos-build]
     if: >
       always() &&
       !cancelled() &&
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.linux.result == 'success' &&
       needs.macos-build.result == 'success'
-    runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
+    runs-on: macos-latest
     # Apple upload + queue can exceed an hour on slow links; retries are in-script.
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v7
+
+      - name: Check Apple Notary reachability
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash .github/scripts/notarize-macos.sh --preflight
 
       - uses: pnpm/action-setup@v6
 
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: pnpm
 
       # Only need the CLI for `tauri signer sign` — no Rust toolchain / rebuild.
       - name: Install frontend deps
@@ -476,7 +483,7 @@ jobs:
           bash .github/scripts/publish-macos-release.sh "${{ steps.paths.outputs.root }}"
 
   # Immutable releases lock assets at publish time — only undraft after every
-  # platform job has uploaded (and merged latest.json).
+  # platform job has uploaded and latest.json has been written once.
   publish:
     name: Publish GitHub Release
     needs: [linux, windows-updater, macos-notarize]
@@ -488,8 +495,15 @@ jobs:
       needs.windows-updater.result == 'success' &&
       needs.macos-notarize.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate latest.json from release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/generate-latest-json.sh
+
       - name: Publish draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
