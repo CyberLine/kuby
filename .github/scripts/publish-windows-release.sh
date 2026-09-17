@@ -56,6 +56,18 @@ fi
 UPLOAD_ARGS+=("$SIG")
 
 echo "Uploading Windows assets to release ${TAG}…"
-gh release upload "$TAG" "${UPLOAD_ARGS[@]}" --clobber
-
-echo "Windows release assets published"
+attempts="${RELEASE_UPLOAD_ATTEMPTS:-3}"
+attempt=1
+while [ "$attempt" -le "$attempts" ]; do
+  if gh release upload "$TAG" --repo "$REPO" "${UPLOAD_ARGS[@]}" --clobber; then
+    echo "Windows release assets published"
+    exit 0
+  fi
+  echo "gh release upload failed (attempt ${attempt}/${attempts})"
+  if [ "$attempt" -eq "$attempts" ]; then
+    echo "::error::gh release upload failed after ${attempts} attempts"
+    exit 1
+  fi
+  sleep $((attempt * 15))
+  attempt=$((attempt + 1))
+done

@@ -26,11 +26,10 @@ permissions:
 # (appstoreconnect.apple.com) and aborts immediately if the Notary API is down
 # or unreachable from the runner.
 #
-# Tag pushes (v*): draft GitHub Release → linux/windows/macOS upload binaries
-# in parallel → publish lists assets, writes latest.json once, then undrafts.
+# Tag pushes (v*): draft GitHub Release → linux/windows/macOS build in parallel
+# → binaries land on the draft (Windows via a follow-up gh upload, not tauri-action)
+# → publish lists assets, writes latest.json once, then undrafts.
 # Platform jobs must not upload latest.json (one writer, no merge/clobber races).
-# Immutable releases freeze assets at publish time, so the release stays draft
-# until every platform (and latest.json) is attached.
 # workflow_dispatch: probe builds → Actions artifacts only (no release / latest.json).
 
 jobs:
@@ -233,32 +232,9 @@ jobs:
       - name: Sync Cargo.toml version
         run: pnpm sync-version
 
-      - name: Build & upload release assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          # getReleaseByTag ignores drafts — pass the id from create-draft.
-          releaseId: ${{ needs.create-draft.outputs.release-id }}
-          tagName: ${{ github.ref_name }}
-          releaseName: Kuby ${{ github.ref_name }}
-          releaseBody: |
-            Downloads for **${{ github.ref_name }}**:
-
-            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
-            - **Linux**: `.AppImage`, `.deb`, `.rpm`
-            - **Windows**: `.exe` (NSIS)
-          # Stay draft until the publish job. Do not undraft here or later jobs cannot upload.
-          releaseDraft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          uploadUpdaterJson: false
-          updaterJsonPreferNsis: true
-
-      - name: Build (manual probe)
-        if: github.event_name == 'workflow_dispatch'
+      # Build only — omit releaseId/tagName so tauri-action does not touch the
+      # GitHub Release. A 422 on uploads.github.com must not discard the NSIS build.
+      - name: Build Windows NSIS
         uses: tauri-apps/tauri-action@v1
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
