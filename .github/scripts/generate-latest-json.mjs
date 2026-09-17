@@ -13,10 +13,15 @@ if (!releaseJsonPath || !sigDir || !outPath) {
 }
 
 const tag = process.env.GITHUB_REF_NAME;
+const repo = process.env.GITHUB_REPOSITORY;
 if (!tag) {
 	fail("GITHUB_REF_NAME is required");
 }
+if (!repo) {
+	fail("GITHUB_REPOSITORY is required");
+}
 const version = tag.replace(/^v/, "");
+const downloadBase = `https://github.com/${repo}/releases/download/${tag}`;
 
 const release = JSON.parse(readFileSync(releaseJsonPath, "utf8"));
 const assets = Array.isArray(release.assets) ? release.assets : [];
@@ -49,12 +54,11 @@ function entry(name) {
 	if (!existsSync(sigPath)) {
 		fail(`missing signature file ${name}.sig`);
 	}
-	if (!asset.url) {
-		fail(`asset ${name} has no download URL`);
-	}
+	// Draft assets from the GitHub API use /download/untagged-<id>/… which 404
+	// after the release is published. Always emit the stable tag URL.
 	return {
 		signature: readFileSync(sigPath, "utf8").replace(/\s+/g, ""),
-		url: asset.url,
+		url: `${downloadBase}/${name}`,
 	};
 }
 
@@ -109,5 +113,8 @@ const json = {
 writeFileSync(outPath, `${JSON.stringify(json, null, 2)}\n`);
 
 for (const [key, value] of Object.entries(platforms)) {
+	if (value.url.includes("/untagged-") || !value.url.startsWith(`${downloadBase}/`)) {
+		fail(`${key} url is not a tag download URL: ${value.url}`);
+	}
 	console.log(`${key}\t${value.url}`);
 }

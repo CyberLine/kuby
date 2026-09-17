@@ -29,6 +29,12 @@ node "${SCRIPT_DIR}/generate-latest-json.mjs" \
   "$WORKDIR/sigs" \
   "$WORKDIR/latest.json"
 
+if grep -q '/untagged-' "$WORKDIR/latest.json"; then
+  echo "::error::latest.json still contains untagged- draft URLs"
+  cat "$WORKDIR/latest.json"
+  exit 1
+fi
+
 # Path basename is the asset name — never use file#label (that is a display label).
 gh release upload "$TAG" --repo "$REPO" "$WORKDIR/latest.json" --clobber
 
