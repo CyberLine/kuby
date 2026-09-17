@@ -1,6 +1,6 @@
 [package]
 name = "kuby"
-version = "0.5.0"
+version = "0.5.1"
 description = "Native multi-cluster Kubernetes desktop client"
 authors = ["Alexander Over"]
 edition = "2021"
