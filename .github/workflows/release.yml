@@ -176,7 +176,7 @@ jobs:
 
       - name: Upload Linux workflow artifacts
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-bundles-${{ github.run_id }}
           path: |
@@ -271,7 +271,7 @@ jobs:
           updaterJsonPreferNsis: true
 
       - name: Upload Windows workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-nsis-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref_name }}
           path: src-tauri/target/release/bundle/nsis/
@@ -383,7 +383,7 @@ jobs:
           args: --target universal-apple-darwin
 
       - name: Upload signed macOS bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-bundles-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref_name }}
           path: |
