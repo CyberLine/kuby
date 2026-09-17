@@ -36,9 +36,29 @@ if [ -z "$DMG" ]; then
   exit 1
 fi
 
+# GitHub Actions artifact zip/download strips the execute bit. Without +x,
+# macOS launchd fails after an in-app update (POSIX 111 / "Launch failed").
+echo "Restoring execute bits on app binaries…"
+find "$APP/Contents/MacOS" -type f -exec chmod 755 {} \;
+if [ ! -x "$APP/Contents/MacOS/kuby" ]; then
+  echo "::error::${APP}/Contents/MacOS/kuby is not executable after chmod"
+  ls -la "$APP/Contents/MacOS" || true
+  exit 1
+fi
+
 echo "Packaging updater archive from stapled app…"
 rm -f "$TAR" "$SIG"
-tar -czf "$TAR" -C "$MACOS_DIR" "Kuby.app"
+COPYFILE_DISABLE=1 tar -czf "$TAR" -C "$MACOS_DIR" "Kuby.app"
+
+bin_mode="$(tar -tzvf "$TAR" | awk '/\/Contents\/MacOS\/kuby$/ { print $1; exit }')"
+case "$bin_mode" in
+  -rwx*) echo "updater archive kuby mode: ${bin_mode}" ;;
+  *)
+    echo "::error::updater archive lost execute bit on Contents/MacOS/kuby (mode=${bin_mode:-missing})"
+    tar -tzvf "$TAR" || true
+    exit 1
+    ;;
+esac
 
 echo "Signing updater archive…"
 pnpm exec tauri signer sign "$TAR"

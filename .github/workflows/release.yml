@@ -433,7 +433,9 @@ jobs:
           echo "root=${root}" >> "$GITHUB_OUTPUT"
           echo "app=${app}" >> "$GITHUB_OUTPUT"
           echo "dmg=${dmg}" >> "$GITHUB_OUTPUT"
-          ls -lah "${root}/macos" "${root}/dmg"
+          # upload-artifact/download-artifact does not reliably keep +x.
+          find "${app}/Contents/MacOS" -type f -exec chmod 755 {} \;
+          ls -lah "${root}/macos" "${root}/dmg" "${app}/Contents/MacOS"
 
       - name: Notarize & staple
         env:
