@@ -27,13 +27,13 @@ permissions:
 # or unreachable from the runner.
 #
 # Tag pushes (v*): draft GitHub Release → linux/windows/macOS build in parallel
-# → binaries land on the draft (Windows via a follow-up gh upload, not tauri-action)
+# → binaries land on the release (Linux/Windows via follow-up gh upload, not tauri-action)
 # → publish lists assets, writes latest.json once, then undrafts.
 # Platform jobs must not upload latest.json (one writer, no merge/clobber races).
 # workflow_dispatch: probe builds → Actions artifacts only (no release / latest.json).
 
 jobs:
-  # Exists before the long platform builds so uploads never hit a published release.
+  # Exists before the long platform builds so uploads have a release to attach to.
   create-draft:
     name: Create draft release
     if: startsWith(github.ref, 'refs/tags/v')
@@ -51,11 +51,7 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             draft="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
-            if [ "$draft" != "true" ]; then
-              echo "::error::Release ${tag} already exists and is published. Immutable releases cannot receive more assets. Tag a new version instead of reusing ${tag}."
-              exit 1
-            fi
-            echo "Draft release ${tag} already exists"
+            echo "Release ${tag} already exists (draft=${draft})"
           else
             prerelease_args=()
             if [[ "$tag" == *-* ]]; then
@@ -136,52 +132,65 @@ jobs:
       - name: Sync Cargo.toml version
         run: pnpm sync-version
 
-      - name: Build & upload release assets
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          NO_STRIP: true
-        with:
-          # getReleaseByTag ignores drafts — pass the id from create-draft.
-          releaseId: ${{ needs.create-draft.outputs.release-id }}
-          tagName: ${{ github.ref_name }}
-          releaseName: Kuby ${{ github.ref_name }}
-          releaseBody: |
-            Downloads for **${{ github.ref_name }}**:
-
-            - **macOS**: universal `.dmg` (Apple Silicon + Intel)
-            - **Linux**: `.AppImage`, `.deb`, `.rpm`
-            - **Windows**: `.exe` (NSIS)
-          # Stay draft until the publish job. Immutable releases reject uploads after publish.
-          releaseDraft: true
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          # latest.json is generated once in publish from the full asset list.
-          uploadUpdaterJson: false
-
-      - name: Build (manual probe)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Build Linux bundles
         uses: tauri-apps/tauri-action@v1
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           NO_STRIP: true
         with:
+          # Build only — omit releaseId/tagName so tauri-action does not touch
+          # the GitHub Release. A flake on uploads.github.com must not discard the bundles.
           uploadUpdaterJson: false
 
       - name: Upload Linux workflow artifacts
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: linux-bundles-${{ github.run_id }}
+          name: linux-bundles-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref_name }}
           path: |
             src-tauri/target/release/bundle/appimage/
             src-tauri/target/release/bundle/deb/
             src-tauri/target/release/bundle/rpm/
           if-no-files-found: error
           retention-days: 5
+
+  linux-updater:
+    name: Upload Linux assets
+    needs: [linux]
+    if: >
+      always() &&
+      !cancelled() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.linux.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Download Linux bundles
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-bundles-${{ github.ref_name }}
+          path: src-tauri/target/release/bundle
+
+      - name: Upload Linux release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          chmod +x .github/scripts/publish-linux-release.sh
+          bash .github/scripts/publish-linux-release.sh src-tauri/target/release/bundle
 
   windows:
     name: Windows x64
@@ -460,16 +469,15 @@ jobs:
           chmod +x .github/scripts/publish-macos-release.sh
           bash .github/scripts/publish-macos-release.sh "${{ steps.paths.outputs.root }}"
 
-  # Immutable releases lock assets at publish time — only undraft after every
-  # platform job has uploaded and latest.json has been written once.
+  # Stay draft until every platform has uploaded and latest.json is written once.
   publish:
     name: Publish GitHub Release
-    needs: [linux, windows-updater, macos-notarize]
+    needs: [linux-updater, windows-updater, macos-notarize]
     if: >
       always() &&
       !cancelled() &&
       startsWith(github.ref, 'refs/tags/v') &&
-      needs.linux.result == 'success' &&
+      needs.linux-updater.result == 'success' &&
       needs.windows-updater.result == 'success' &&
       needs.macos-notarize.result == 'success'
     runs-on: ubuntu-latest
@@ -491,6 +499,7 @@ jobs:
           assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
           echo "Release assets:"
           echo "$assets"
+          echo "$assets" | grep -q '\.AppImage\.tar\.gz$' || { echo "::error::missing Linux AppImage.tar.gz"; exit 1; }
           echo "$assets" | grep -q '\.deb$' || { echo "::error::missing Linux .deb"; exit 1; }
           echo "$assets" | grep -q '\.dmg$' || { echo "::error::missing macOS .dmg"; exit 1; }
           echo "$assets" | grep -qi 'setup\.exe$' || { echo "::error::missing Windows setup.exe"; exit 1; }

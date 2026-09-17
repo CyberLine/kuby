@@ -63,10 +63,12 @@ function entry(name) {
 }
 
 const appImage = unique((name) => name.endsWith(".AppImage"), "Linux AppImage");
+const appImageTar = files.find((name) => name.endsWith(".AppImage.tar.gz"));
+const linuxUpdater = appImageTar ?? appImage;
 const deb = unique((name) => name.endsWith(".deb"), "Linux .deb");
 const rpm = unique((name) => name.endsWith(".rpm"), "Linux .rpm");
 const appTar = unique(
-	(name) => name.endsWith(".app.tar.gz"),
+	(name) => name.endsWith(".app.tar.gz") && !name.endsWith(".AppImage.tar.gz"),
 	"macOS updater archive",
 );
 const nsisZip = files.find((name) => name.endsWith(".nsis.zip"));
@@ -76,11 +78,11 @@ if (!windowsUpdater) {
 	fail("missing Windows updater (.nsis.zip or setup.exe)");
 }
 
-const appImageEntry = entry(appImage);
+const linuxUpdaterEntry = entry(linuxUpdater);
 const darwinEntry = entry(appTar);
 const platforms = {
-	"linux-x86_64": appImageEntry,
-	"linux-x86_64-appimage": appImageEntry,
+	"linux-x86_64": linuxUpdaterEntry,
+	"linux-x86_64-appimage": linuxUpdaterEntry,
 	"linux-x86_64-deb": entry(deb),
 	"linux-x86_64-rpm": entry(rpm),
 	"windows-x86_64": entry(windowsUpdater),
