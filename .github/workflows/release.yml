@@ -29,16 +29,67 @@ permissions:
 # restore often hits "operation cannot be completed in timeout" and "pnpm cache
 # is not found", while the machine already has local toolchains/stores.
 #
-# Tag pushes (v*): full GitHub Release (linux → windows, macOS notarize).
+# Tag pushes (v*): draft GitHub Release → linux/windows/macOS upload → publish.
+# Immutable releases freeze assets at publish time, so the release stays draft
+# until every platform (and latest.json) is attached.
 # workflow_dispatch: probe builds → Actions artifacts only (no release / latest.json).
 
 jobs:
+  # Exists before the long platform builds so uploads never hit a published release.
+  create-draft:
+    name: Create draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release-id: ${{ steps.ensure.outputs.release-id }}
+    steps:
+      - name: Ensure draft GitHub Release
+        id: ensure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+            if [ "$draft" != "true" ]; then
+              echo "::error::Release ${tag} already exists and is published. Immutable releases cannot receive more assets. Tag a new version instead of reusing ${tag}."
+              exit 1
+            fi
+            echo "Draft release ${tag} already exists"
+          else
+            prerelease_args=()
+            if [[ "$tag" == *-* ]]; then
+              prerelease_args+=(--prerelease)
+            fi
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --verify-tag \
+              --title "Kuby ${tag}" \
+              --notes "Downloads for **${tag}**:
+
+          - **macOS**: universal .dmg (Apple Silicon + Intel)
+          - **Linux**: .AppImage, .deb, .rpm
+          - **Windows**: .exe (NSIS)" \
+              "${prerelease_args[@]}"
+          fi
+          id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json id --jq .id)"
+          echo "release-id=${id}" >> "$GITHUB_OUTPUT"
+          echo "Draft release ${tag} id=${id}"
+
   linux:
     name: Linux x64
+    needs: [create-draft]
     if: >
-      github.event_name == 'push' ||
-      inputs.platforms == 'linux-and-windows' ||
-      inputs.platforms == 'all'
+      always() &&
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && needs.create-draft.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' &&
+          (inputs.platforms == 'linux-and-windows' || inputs.platforms == 'all'))
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -96,6 +147,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           NO_STRIP: true
         with:
+          # getReleaseByTag ignores drafts — pass the id from create-draft.
+          releaseId: ${{ needs.create-draft.outputs.release-id }}
           tagName: ${{ github.ref_name }}
           releaseName: Kuby ${{ github.ref_name }}
           releaseBody: |
@@ -104,7 +157,8 @@ jobs:
             - **macOS**: universal `.dmg` (Apple Silicon + Intel)
             - **Linux**: `.AppImage`, `.deb`, `.rpm`
             - **Windows**: `.exe` (NSIS)
-          releaseDraft: false
+          # Stay draft until the publish job. Immutable releases reject uploads after publish.
+          releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Build (manual probe)
@@ -131,7 +185,7 @@ jobs:
 
   windows:
     name: Windows x64
-    needs: [linux]
+    needs: [create-draft, linux]
     # Tag releases wait for Linux. Manual "windows" skips Linux (needs → skipped).
     if: >
       always() && (
@@ -185,6 +239,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
+          # getReleaseByTag ignores drafts — pass the id from create-draft.
+          releaseId: ${{ needs.create-draft.outputs.release-id }}
           tagName: ${{ github.ref_name }}
           releaseName: Kuby ${{ github.ref_name }}
           releaseBody: |
@@ -193,7 +249,8 @@ jobs:
             - **macOS**: universal `.dmg` (Apple Silicon + Intel)
             - **Linux**: `.AppImage`, `.deb`, `.rpm`
             - **Windows**: `.exe` (NSIS)
-          releaseDraft: false
+          # Stay draft until the publish job. Do not undraft here or later jobs cannot upload.
+          releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           # Linux already wrote latest.json; we merge windows-x86_64 below.
           uploadUpdaterJson: false
@@ -233,7 +290,14 @@ jobs:
   # artifacts so notarization can retry without a full universal rebuild.
   macos-build:
     name: macOS build
-    if: github.event_name == 'push' || inputs.platforms == 'all'
+    needs: [create-draft]
+    if: >
+      always() &&
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && needs.create-draft.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && inputs.platforms == 'all')
+      )
     runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     timeout-minutes: 60
     steps:
@@ -307,8 +371,14 @@ jobs:
   macos-notarize:
     name: macOS notarize & upload
     # Notarize + GitHub Release only for version tags (not manual probes).
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: macos-build
+    # Wait for Linux so the draft exists and tauri-action does not clobber latest.json.
+    needs: [macos-build, linux]
+    if: >
+      always() &&
+      !cancelled() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.linux.result == 'success' &&
+      needs.macos-build.result == 'success'
     runs-on: ${{ vars.MACOS_RUNNER || 'self-hosted' }}
     # Apple upload + queue can exceed an hour on slow links; retries are in-script.
     timeout-minutes: 150
@@ -366,7 +436,7 @@ jobs:
             "${{ steps.paths.outputs.app }}" \
             "${{ steps.paths.outputs.dmg }}"
 
-      - name: Publish macOS release assets
+      - name: Upload macOS release assets
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -374,3 +444,38 @@ jobs:
         run: |
           chmod +x .github/scripts/publish-macos-release.sh
           bash .github/scripts/publish-macos-release.sh "${{ steps.paths.outputs.root }}"
+
+  # Immutable releases lock assets at publish time — only undraft after every
+  # platform job has uploaded (and merged latest.json).
+  publish:
+    name: Publish GitHub Release
+    needs: [linux, windows, macos-notarize]
+    if: >
+      always() &&
+      !cancelled() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.linux.result == 'success' &&
+      needs.windows.result == 'success' &&
+      needs.macos-notarize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          assets="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          echo "Release assets:"
+          echo "$assets"
+          echo "$assets" | grep -q '\.deb$' || { echo "::error::missing Linux .deb"; exit 1; }
+          echo "$assets" | grep -q '\.dmg$' || { echo "::error::missing macOS .dmg"; exit 1; }
+          echo "$assets" | grep -qi 'setup\.exe$' || { echo "::error::missing Windows setup.exe"; exit 1; }
+          echo "$assets" | grep -qx 'latest.json' || { echo "::error::missing latest.json"; exit 1; }
+          if [[ "$tag" == *-* ]]; then
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
+          else
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
+          echo "Published ${tag}"

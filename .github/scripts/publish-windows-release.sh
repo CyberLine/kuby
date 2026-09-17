@@ -13,6 +13,15 @@ NSIS_DIR="${BUNDLE_ROOT}/nsis"
 
 : "${TAURI_SIGNING_PRIVATE_KEY:?TAURI_SIGNING_PRIVATE_KEY is required}"
 
+if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  echo "::error::Release ${TAG} does not exist; the create-draft job should have created it."
+  exit 1
+fi
+if [ "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" != "true" ]; then
+  echo "::error::Release ${TAG} is already published. Immutable releases cannot receive more assets. Tag a new version instead of reusing ${TAG}."
+  exit 1
+fi
+
 if [ ! -d "$NSIS_DIR" ]; then
   echo "::error::missing NSIS bundle dir at ${NSIS_DIR}"
   find "$BUNDLE_ROOT" -maxdepth 3 -print || true
