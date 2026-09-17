@@ -29,7 +29,10 @@ permissions:
 # restore often hits "operation cannot be completed in timeout" and "pnpm cache
 # is not found", while the machine already has local toolchains/stores.
 #
-# Tag pushes (v*): draft GitHub Release → linux/windows/macOS upload → publish.
+# Tag pushes (v*): draft GitHub Release → linux/windows/macOS build in parallel →
+# updater JSON merges (after linux) → publish.
+# latest.json is a single file, so Windows/macOS *merges* wait for Linux to write
+# it first. The compiles themselves do not.
 # Immutable releases freeze assets at publish time, so the release stays draft
 # until every platform (and latest.json) is attached.
 # workflow_dispatch: probe builds → Actions artifacts only (no release / latest.json).
@@ -185,15 +188,16 @@ jobs:
 
   windows:
     name: Windows x64
-    needs: [create-draft, linux]
-    # Tag releases wait for Linux. Manual "windows" skips Linux (needs → skipped).
+    needs: [create-draft]
     if: >
-      always() && (
-        (github.event_name == 'push' && needs.linux.result == 'success') ||
-        (github.event_name == 'workflow_dispatch' && inputs.platforms == 'windows') ||
+      always() &&
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && needs.create-draft.result == 'success') ||
         (github.event_name == 'workflow_dispatch' &&
-          (inputs.platforms == 'linux-and-windows' || inputs.platforms == 'all') &&
-          needs.linux.result == 'success')
+          (inputs.platforms == 'windows' ||
+           inputs.platforms == 'linux-and-windows' ||
+           inputs.platforms == 'all'))
       )
     runs-on: windows-latest
     timeout-minutes: 90
@@ -252,20 +256,9 @@ jobs:
           # Stay draft until the publish job. Do not undraft here or later jobs cannot upload.
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          # Linux already wrote latest.json; we merge windows-x86_64 below.
+          # latest.json is merged after Linux in windows-updater (avoids clobber).
           uploadUpdaterJson: false
           updaterJsonPreferNsis: true
-
-      - name: Merge Windows updater into latest.json
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: |
-          bash .github/scripts/publish-windows-release.sh \
-            src-tauri/target/release/bundle
 
       - name: Build (manual probe)
         if: github.event_name == 'workflow_dispatch'
@@ -278,13 +271,50 @@ jobs:
           updaterJsonPreferNsis: true
 
       - name: Upload Windows workflow artifacts
-        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: windows-nsis-${{ github.run_id }}
+          name: windows-nsis-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref_name }}
           path: src-tauri/target/release/bundle/nsis/
           if-no-files-found: error
           retention-days: 5
+
+  # latest.json is one file; merge Windows after Linux has written it.
+  windows-updater:
+    name: Merge Windows updater
+    needs: [windows, linux]
+    if: >
+      always() &&
+      !cancelled() &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.windows.result == 'success' &&
+      needs.linux.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Download Windows NSIS bundles
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-nsis-${{ github.ref_name }}
+          path: src-tauri/target/release/bundle/nsis
+
+      - name: Merge Windows updater into latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash .github/scripts/publish-windows-release.sh src-tauri/target/release/bundle
 
   # Signed build only (no Apple notarization). Upload bundles as workflow
   # artifacts so notarization can retry without a full universal rebuild.
@@ -449,13 +479,13 @@ jobs:
   # platform job has uploaded (and merged latest.json).
   publish:
     name: Publish GitHub Release
-    needs: [linux, windows, macos-notarize]
+    needs: [linux, windows-updater, macos-notarize]
     if: >
       always() &&
       !cancelled() &&
       startsWith(github.ref, 'refs/tags/v') &&
       needs.linux.result == 'success' &&
-      needs.windows.result == 'success' &&
+      needs.windows-updater.result == 'success' &&
       needs.macos-notarize.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
