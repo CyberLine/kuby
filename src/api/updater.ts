@@ -11,8 +11,11 @@ export type UpdateCheckResult =
   | { status: "busy" }
   | { status: "up-to-date" }
   | { status: "skipped"; version: string }
+  | { status: "deferred"; version: string }
   | { status: "installed"; version: string }
   | { status: "error"; message: string };
+
+export type UpdateCheckSource = "startup" | "menu";
 
 export type UpdateCheckHooks = {
   confirmInstall: (info: { currentVersion: string; version: string }) => Promise<boolean>;
@@ -20,11 +23,39 @@ export type UpdateCheckHooks = {
 };
 
 const CHECK_TIMEOUT_MS = 20_000;
+const SKIPPED_VERSION_KEY = "kuby.update.skippedVersion";
 
 let inFlight = false;
 
+function readSkippedVersion(): string | null {
+  try {
+    return localStorage.getItem(SKIPPED_VERSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeSkippedVersion(version: string) {
+  try {
+    localStorage.setItem(SKIPPED_VERSION_KEY, version);
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearSkippedVersion() {
+  try {
+    localStorage.removeItem(SKIPPED_VERSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 /** Check GitHub latest.json, confirm, then download + install with progress. */
-export async function checkForUpdates(hooks: UpdateCheckHooks): Promise<UpdateCheckResult> {
+export async function checkForUpdates(
+  hooks: UpdateCheckHooks,
+  source: UpdateCheckSource = "menu",
+): Promise<UpdateCheckResult> {
   if (inFlight) return { status: "busy" };
   inFlight = true;
   let update: Update | null = null;
@@ -34,11 +65,21 @@ export async function checkForUpdates(hooks: UpdateCheckHooks): Promise<UpdateCh
     if (!update) return { status: "up-to-date" };
     const found = update;
 
+    // Startup: only prompt once per available version; menu always prompts.
+    if (source === "startup" && readSkippedVersion() === found.version) {
+      return { status: "deferred", version: found.version };
+    }
+
     const accepted = await hooks.confirmInstall({
       currentVersion: found.currentVersion,
       version: found.version,
     });
-    if (!accepted) return { status: "skipped", version: found.version };
+    if (!accepted) {
+      writeSkippedVersion(found.version);
+      return { status: "skipped", version: found.version };
+    }
+
+    clearSkippedVersion();
 
     let downloaded = 0;
     let total: number | undefined;

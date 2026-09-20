@@ -59,6 +59,8 @@ Bump with e.g. `pnpm version patch` (or edit `package.json`), then `pnpm sync-ve
 
 Push a version tag that matches `package.json` (e.g. `v0.3.0`). Only `v*` tags publish a GitHub Release; `main` and other branches do not.
 
+The release body prepends download hints (macOS / Linux / Windows) and appends GitHub auto-generated notes (commits and PRs since the previous tag). The same body is used for Tauri updater `notes` in `latest.json`.
+
 ```bash
 # after bumping package.json version
 pnpm sync-version

@@ -117,9 +117,100 @@ export function isOpaqueSecret(obj: K8sObject | null | undefined, kind?: string)
   return t == null || t === "" || t === "Opaque";
 }
 
-export function supportsDataTab(obj: K8sObject | null | undefined, kind: string): boolean {
+const CERT_SECRET_KEYS = /^(tls\.crt|ca\.crt|.+\.(crt|pem|cert))$/i;
+
+function secretHasCertKeys(obj: K8sObject | null | undefined): boolean {
+  const data = resourceDataMap(obj);
+  if (!data) return false;
+  return Object.keys(data).some((key) => CERT_SECRET_KEYS.test(key));
+}
+
+function isCertManagerManagedSecret(obj: K8sObject | null | undefined): boolean {
+  const labels = obj?.metadata?.labels || {};
+  const annotations = obj?.metadata?.annotations || {};
+  return (
+    Object.keys(labels).some((k) => k.includes("cert-manager.io")) ||
+    Object.keys(annotations).some((k) => k.includes("cert-manager.io"))
+  );
+}
+
+export function isCertManagerApi(apiVersion: string | null | undefined): boolean {
+  return Boolean(apiVersion?.includes("cert-manager.io"));
+}
+
+/** cert-manager.io Certificate CR (material lives in spec.secretName). */
+export function isCertManagerCertificate(
+  obj: K8sObject | null | undefined,
+  kind?: string,
+  apiVersion?: string,
+): boolean {
+  const k = kind || (obj?.kind as string | undefined);
+  const av = apiVersion || (obj?.apiVersion as string | undefined);
+  return k === "Certificate" && isCertManagerApi(av);
+}
+
+/** cert-manager.io CertificateRequest CR (PEM in status.certificate). */
+export function isCertManagerCertificateRequest(
+  obj: K8sObject | null | undefined,
+  kind?: string,
+  apiVersion?: string,
+): boolean {
+  const k = kind || (obj?.kind as string | undefined);
+  const av = apiVersion || (obj?.apiVersion as string | undefined);
+  return k === "CertificateRequest" && isCertManagerApi(av);
+}
+
+export function certManagerSecretName(obj: K8sObject | null | undefined): string | null {
+  const spec = obj?.spec;
+  if (!spec || typeof spec !== "object") return null;
+  const name = (spec as Record<string, unknown>).secretName;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}
+
+/** Build fake secret data map from CertificateRequest status fields. */
+export function certificateRequestDataMap(
+  obj: K8sObject | null | undefined,
+): Record<string, string> | undefined {
+  const status = obj?.status;
+  if (!status || typeof status !== "object") return undefined;
+  const out: Record<string, string> = {};
+  const cert = (status as Record<string, unknown>).certificate;
+  const ca = (status as Record<string, unknown>).ca;
+  if (typeof cert === "string" && cert) out["tls.crt"] = cert;
+  if (typeof ca === "string" && ca) out["ca.crt"] = ca;
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** Secrets (TLS / cert-manager) that should use the read-only certificate view. */
+export function isCertificateSecret(obj: K8sObject | null | undefined, kind?: string): boolean {
+  const k = kind || (obj?.kind as string | undefined);
+  if (k !== "Secret") return false;
+  const t = obj?.type;
+  if (t === "kubernetes.io/tls") return true;
+  if (secretHasCertKeys(obj) && isCertManagerManagedSecret(obj)) return true;
+  if (isOpaqueSecret(obj, k)) return false;
+  return secretHasCertKeys(obj);
+}
+
+export function supportsCertificateView(
+  obj: K8sObject | null | undefined,
+  kind: string,
+  apiVersion?: string,
+): boolean {
+  if (isCertificateSecret(obj, kind)) return true;
+  if (isCertManagerCertificate(obj, kind, apiVersion)) return true;
+  if (isCertManagerCertificateRequest(obj, kind, apiVersion)) return true;
+  return false;
+}
+
+export function supportsDataTab(
+  obj: K8sObject | null | undefined,
+  kind: string,
+  apiVersion?: string,
+): boolean {
   if (kind === "ConfigMap") return true;
-  return isOpaqueSecret(obj, kind);
+  if (isOpaqueSecret(obj, kind) && !isCertificateSecret(obj, kind)) return true;
+  return supportsCertificateView(obj, kind, apiVersion);
 }
 
 export function ResourceDataEditor(props: Props) {

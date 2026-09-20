@@ -86,6 +86,7 @@ function gvkForKind(
     CronJob: "batch/v1",
     Ingress: "networking.k8s.io/v1",
     NetworkPolicy: "networking.k8s.io/v1",
+    ServiceCIDR: "networking.k8s.io/v1",
     HorizontalPodAutoscaler: "autoscaling/v2",
     PodDisruptionBudget: "policy/v1",
     Role: "rbac.authorization.k8s.io/v1",
@@ -95,6 +96,31 @@ function gvkForKind(
     StorageClass: "storage.k8s.io/v1",
   };
   return { apiVersion: map[kind] || "v1", kind };
+}
+
+/** Resolve ParentReference.resource (plural) to kind + apiVersion. */
+function gvkFromParentRef(
+  group: string,
+  resource: string,
+  discovered?: { group?: string; kind: string; plural: string; apiVersion: string }[],
+): { apiVersion: string; kind: string } | null {
+  const g = group || "";
+  if (discovered?.length) {
+    const match = discovered.find((r) => r.plural === resource && (r.group || "") === g);
+    if (match) return { apiVersion: match.apiVersion, kind: match.kind };
+  }
+  // Common parents for networking.k8s.io/IPAddress (kubectl PARENTREF column).
+  const fallback: Record<string, string> = {
+    services: "Service",
+    pods: "Pod",
+    servicecidrs: "ServiceCIDR",
+  };
+  const kind = fallback[resource];
+  if (!kind) return null;
+  if (g && g !== "core") {
+    return { apiVersion: `${g}/v1`, kind };
+  }
+  return gvkForKind(kind);
 }
 
 function matchLabelsOf(obj: K8sObject): Record<string, string> | null {
@@ -108,7 +134,11 @@ function matchLabelsOf(obj: K8sObject): Record<string, string> | null {
 }
 
 /** Extract navigable relations for the detail pane. */
-export function extractRelations(obj: K8sObject, kind: string): RelationLink[] {
+export function extractRelations(
+  obj: K8sObject,
+  kind: string,
+  discovered?: { group?: string; kind: string; plural: string; apiVersion: string }[],
+): RelationLink[] {
   const links: RelationLink[] = [];
   const name = objectName(obj);
   const ns = objectNamespace(obj) || null;
@@ -278,6 +308,36 @@ export function extractRelations(obj: K8sObject, kind: string): RelationLink[] {
         namespace: ns,
         name: scale.name,
       });
+    }
+  }
+
+  if (kind === "IPAddress") {
+    const parent = asRecord(spec?.parentRef);
+    if (
+      parent &&
+      typeof parent.name === "string" &&
+      typeof parent.resource === "string" &&
+      parent.resource
+    ) {
+      const gvk = gvkFromParentRef(
+        typeof parent.group === "string" ? parent.group : "",
+        parent.resource,
+        discovered,
+      );
+      if (gvk) {
+        const parentNs =
+          typeof parent.namespace === "string" && parent.namespace
+            ? parent.namespace
+            : null;
+        links.push({
+          id: `ip-parent-${parent.resource}-${parent.name}`,
+          group: "Parent",
+          title: `${gvk.kind}/${parent.name}`,
+          ...gvk,
+          namespace: parentNs,
+          name: parent.name,
+        });
+      }
     }
   }
 

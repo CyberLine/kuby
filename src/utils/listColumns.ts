@@ -8,6 +8,7 @@ export type ListColumnId =
   | "status"
   | "pods"
   | "metrics"
+  | "expires"
   | "age";
 
 export type ListColumnMeta = {
@@ -35,6 +36,7 @@ export const LIST_COLUMN_META: Record<ListColumnId, ListColumnMeta> = {
   status: { id: "status", label: "Status", defaultFr: 0.8, minPx: 70, hideable: true },
   pods: { id: "pods", label: "Pods", defaultFr: 0.6, minPx: 50, hideable: true },
   metrics: { id: "metrics", label: "CPU / Mem", defaultFr: 1, minPx: 70, hideable: true },
+  expires: { id: "expires", label: "Expires", defaultFr: 0.7, minPx: 64, hideable: true },
   age: { id: "age", label: "Age", defaultFr: 0.5, minPx: 40, hideable: true },
 };
 
@@ -42,8 +44,10 @@ export type KindColumnCaps = {
   namespace: boolean;
   node: boolean;
   version: boolean;
+  status: boolean;
   pods: boolean;
   metrics: boolean;
+  expires: boolean;
 };
 
 export type ColumnPrefs = {
@@ -65,9 +69,10 @@ export function availableColumns(caps: KindColumnCaps): ListColumnId[] {
   if (caps.namespace) cols.push("namespace");
   if (caps.node) cols.push("node");
   if (caps.version) cols.push("version");
-  cols.push("status");
+  if (caps.status) cols.push("status");
   if (caps.pods) cols.push("pods");
   if (caps.metrics) cols.push("metrics");
+  if (caps.expires) cols.push("expires");
   cols.push("age");
   return cols;
 }

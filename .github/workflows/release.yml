@@ -62,6 +62,7 @@ jobs:
               --draft \
               --verify-tag \
               --title "Kuby ${tag}" \
+              --generate-notes \
               --notes "Downloads for **${tag}**:
 
           - **macOS**: universal .dmg (Apple Silicon + Intel)

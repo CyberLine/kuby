@@ -161,6 +161,38 @@ export function kindHasNodeColumn(kind: string): boolean {
   return kind === "Pod";
 }
 
+/** Kinds with a meaningful list Status column (phase, replica ratio, or dedicated handler). */
+const STATUS_COLUMN_KINDS = new Set([
+  "Pod",
+  "Deployment",
+  "StatefulSet",
+  "DaemonSet",
+  "ReplicaSet",
+  "Job",
+  "PersistentVolumeClaim",
+  "PersistentVolume",
+  "Namespace",
+  "Node",
+]);
+
+/** Status column for core kinds above, plus Longhorn Node/Volume. */
+export function kindHasStatusColumn(kind: string, apiVersion?: string | null): boolean {
+  if (STATUS_COLUMN_KINDS.has(kind)) return true;
+  if (kind === "Volume" && (apiVersion || "").startsWith("longhorn.io/")) {
+    return true;
+  }
+  return false;
+}
+
+/** Expiry column for TLS secrets and cert-manager certificate resources. */
+export function kindHasExpiresColumn(kind: string, apiVersion?: string | null): boolean {
+  if (kind === "Secret") return true;
+  if (kind === "Certificate" || kind === "CertificateRequest") {
+    return !apiVersion || apiVersion.includes("cert-manager.io");
+  }
+  return false;
+}
+
 /** Aggregated metrics APIs are computed snapshots — kube watch needs resourceVersion. */
 const LIST_ONLY_API_GROUPS = new Set([
   "metrics.k8s.io",

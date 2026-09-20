@@ -528,11 +528,11 @@ function createClusterStore() {
     setSelectedNamespaces(context, next);
   }
 
-  function addNamespaceToLocalList(context: string, name: string) {
+  function addNamespaceToLocalList(context: string, name: string, persistExtra = false) {
     const listed = namespaces[context] || [];
     if (!listed.includes(name)) {
       const access = namespaceAccess[context];
-      if (access?.restricted) {
+      if (persistExtra || access?.restricted) {
         const extras = uniqueSorted([...loadExtraNamespaces(context), name]);
         saveExtraNamespaces(context, extras);
         setExtraNamespaces(context, extras);
@@ -541,6 +541,21 @@ function createClusterStore() {
     }
     const selected = (selectedNamespaces[context] || []).filter((n) => n !== "*");
     selectNamespaces(context, selected.includes(name) ? selected : [...selected, name]);
+  }
+
+  /** Track a namespace by name in the sidebar (for users who cannot list namespaces). */
+  function addNamespace(context: string, raw: string): boolean {
+    const name = raw.trim();
+    if (!isValidNamespaceName(name)) {
+      setError(
+        name
+          ? `Invalid namespace "${name}". Use a DNS label (lowercase, digits, hyphens).`
+          : "Enter a namespace name.",
+      );
+      return false;
+    }
+    addNamespaceToLocalList(context, name, true);
+    return true;
   }
 
   /** Create a Namespace resource on the cluster, then select it in the sidebar. */
@@ -1118,6 +1133,7 @@ function createClusterStore() {
     setSelectedNamespaces: selectNamespaces,
     namespaceAccess,
     extraNamespaces,
+    addNamespace,
     createNamespace,
     removeExtraNamespaces,
     isExtraNamespace,

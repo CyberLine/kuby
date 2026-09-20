@@ -6,7 +6,7 @@ export function NamespacePicker() {
   const store = clusterStore;
   const [draft, setDraft] = createSignal("");
   const [dialogOpen, setDialogOpen] = createSignal(false);
-  const [creating, setCreating] = createSignal(false);
+  const [busy, setBusy] = createSignal(false);
   const [inputEl, setInputEl] = createSignal<HTMLInputElement | null>(null);
   const ctx = () => store.selectedContext();
   const access = () => store.namespaceAccess[ctx()];
@@ -20,7 +20,7 @@ export function NamespacePicker() {
   createEffect(() => {
     if (!dialogOpen()) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !creating()) closeDialog();
+      if (e.key === "Escape" && !busy()) closeDialog();
     };
     window.addEventListener("keydown", onKey);
     onCleanup(() => window.removeEventListener("keydown", onKey));
@@ -32,14 +32,21 @@ export function NamespacePicker() {
   });
 
   function closeDialog() {
-    if (creating()) return;
+    if (busy()) return;
     setDialogOpen(false);
     setDraft("");
   }
 
-  async function create() {
-    if (!ctx() || creating()) return;
-    setCreating(true);
+  async function submit() {
+    if (!ctx() || busy()) return;
+    if (restricted()) {
+      if (store.addNamespace(ctx(), draft())) {
+        setDraft("");
+        setDialogOpen(false);
+      }
+      return;
+    }
+    setBusy(true);
     try {
       const ok = await store.createNamespace(ctx(), draft());
       if (ok) {
@@ -47,7 +54,7 @@ export function NamespacePicker() {
         setDialogOpen(false);
       }
     } finally {
-      setCreating(false);
+      setBusy(false);
     }
   }
 
@@ -59,7 +66,7 @@ export function NamespacePicker() {
           <Show when={restricted()}>
             <span
               class="ns-limited"
-              title="This user cannot list cluster namespaces. Using the kubeconfig default and names you track locally."
+              title="This user cannot list cluster namespaces. Using the kubeconfig default and names you add."
             >
               limited
             </span>
@@ -71,8 +78,8 @@ export function NamespacePicker() {
             class="btn ghost ns-action"
             disabled={!ctx()}
             onClick={() => setDialogOpen(true)}
-            title="Create namespace"
-            aria-label="Create namespace"
+            title={restricted() ? "Add namespace by name" : "Create namespace"}
+            aria-label={restricted() ? "Add namespace by name" : "Create namespace"}
           >
             +
           </button>
@@ -120,8 +127,8 @@ export function NamespacePicker() {
       <Show when={restricted()}>
         <p class="ns-hint">
           Cannot list cluster namespaces. Seeded from kubeconfig
-          {access()?.defaultNamespace ? ` (${access()?.defaultNamespace})` : ""}. Use + to create
-          one on the cluster.
+          {access()?.defaultNamespace ? ` (${access()?.defaultNamespace})` : ""}. Add others by
+          name to switch into namespaces you can access.
         </p>
       </Show>
       <Show when={selectedExtras().length && !dialogOpen()}>
@@ -150,19 +157,21 @@ export function NamespacePicker() {
               onClick={closeDialog}
               title="Close"
               aria-label="Close"
-              disabled={creating()}
+              disabled={busy()}
             >
               ×
             </button>
-            <h1 id="ns-add-title">Create namespace</h1>
+            <h1 id="ns-add-title">{restricted() ? "Add namespace" : "Create namespace"}</h1>
             <p class="about-tagline ns-add-copy">
-              Creates a new Namespace resource on the connected cluster.
+              {restricted()
+                ? "Adds the name to the sidebar so you can switch into a namespace you can access but cannot list."
+                : "Creates a new Namespace resource on the connected cluster."}
             </p>
             <form
               class="ns-add-form"
               onSubmit={(e) => {
                 e.preventDefault();
-                void create();
+                void submit();
               }}
             >
               <input
@@ -173,19 +182,19 @@ export function NamespacePicker() {
                 spellcheck={false}
                 autocapitalize="off"
                 autocomplete="off"
-                disabled={!ctx() || creating()}
+                disabled={!ctx() || busy()}
                 onInput={(e) => setDraft(e.currentTarget.value)}
               />
               <div class="ns-add-actions">
-                <button type="button" class="btn ghost" onClick={closeDialog} disabled={creating()}>
+                <button type="button" class="btn ghost" onClick={closeDialog} disabled={busy()}>
                   Cancel
                 </button>
                 <button
                   type="submit"
                   class="btn primary"
-                  disabled={!ctx() || !draft().trim() || creating()}
+                  disabled={!ctx() || !draft().trim() || busy()}
                 >
-                  {creating() ? "Creating…" : "Create"}
+                  {restricted() ? "Add" : busy() ? "Creating…" : "Create"}
                 </button>
               </div>
             </form>

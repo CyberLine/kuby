@@ -11,7 +11,12 @@ import {
 } from "solid-js";
 import { confirmAction } from "./api/confirm";
 import { api } from "./api/tauri";
-import { checkForUpdates, formatUpdateProgress, updateProgressPercent } from "./api/updater";
+import {
+  checkForUpdates,
+  formatUpdateProgress,
+  type UpdateCheckSource,
+  updateProgressPercent,
+} from "./api/updater";
 import logo from "./assets/logo.png";
 import { AboutDialog } from "./components/AboutDialog";
 import { CodeEditor } from "./components/CodeEditor";
@@ -26,12 +31,19 @@ import { NodeDetailView } from "./components/NodeDetailView";
 import { OverviewView } from "./components/OverviewView";
 import { PodContainersSection } from "./components/PodContainersSection";
 import {
+  certificateRequestDataMap,
+  certManagerSecretName,
+  isCertificateSecret,
+  isCertManagerCertificate,
+  isCertManagerCertificateRequest,
   isOpaqueSecret,
   ResourceDataEditor,
   resourceDataMap,
+  supportsCertificateView,
   supportsDataTab,
 } from "./components/ResourceDataEditor";
 import { ResourceIcon } from "./components/ResourceIcon";
+import { SecretCertificateView } from "./components/SecretCertificateView";
 import { TelemetryDialog } from "./components/TelemetryDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { VirtualList } from "./components/VirtualList";
@@ -48,8 +60,10 @@ import {
   CURATED_NAV,
   clusterHasLonghorn,
   isPseudoKind,
+  kindHasExpiresColumn,
   kindHasNamespaceColumn,
   kindHasNodeColumn,
+  kindHasStatusColumn,
   longhornApiVersion,
   objectKey,
   objectName,
@@ -74,6 +88,12 @@ import type {
   PodMetrics,
   PortForwardInfo,
 } from "./types";
+import {
+  certificateExpiryFromObject,
+  expiryTone,
+  formatCertDate,
+  formatExpiryListLabel,
+} from "./utils/certificates";
 import {
   availableColumns,
   buildGridTemplate,
@@ -266,32 +286,39 @@ function App() {
     setStatusProgress(null);
   }
 
-  async function runUpdateCheck() {
-    const result = await checkForUpdates({
-      confirmInstall: ({ currentVersion, version }) =>
-        confirmAction(
-          `Kuby ${version} is available (you have ${currentVersion}).\n\nDownload and install now? You will need to restart afterwards.`,
-          "Update Kuby",
-        ),
-      onProgress: (progress) => {
-        showStatus(formatUpdateProgress(progress), false, 0, updateProgressPercent(progress));
+  async function runUpdateCheck(source: UpdateCheckSource = "menu") {
+    const result = await checkForUpdates(
+      {
+        confirmInstall: ({ currentVersion, version }) =>
+          confirmAction(
+            `Kuby ${version} is available (you have ${currentVersion}).\n\nDownload and install now? You will need to restart afterwards.`,
+            "Update Kuby",
+          ),
+        onProgress: (progress) => {
+          // Startup: stay quiet while checking; only surface download/install progress.
+          if (source === "startup" && progress.phase === "checking") return;
+          showStatus(formatUpdateProgress(progress), false, 0, updateProgressPercent(progress));
+        },
       },
-    });
+      source,
+    );
     switch (result.status) {
       case "busy":
-        showStatus("Already checking for updates…");
+        if (source === "menu") showStatus("Already checking for updates…");
         break;
       case "up-to-date":
-        showStatus("Up to date");
+        if (source === "menu") showStatus("Up to date");
+        break;
+      case "deferred":
         break;
       case "skipped":
-        showStatus(`Skipped update to ${result.version}`);
+        if (source === "menu") showStatus(`Skipped update to ${result.version}`);
         break;
       case "installed":
         showStatus(`Installed ${result.version}. Restart Kuby to apply.`, false, 0);
         break;
       case "error":
-        showStatus(result.message, true, 0);
+        if (source === "menu") showStatus(result.message, true, 0);
         break;
     }
   }
@@ -438,10 +465,11 @@ function App() {
       .then(keep)
       .catch(() => {});
     void listen("check-updates", () => {
-      void runUpdateCheck();
+      void runUpdateCheck("menu");
     })
       .then(keep)
       .catch(() => {});
+    void runUpdateCheck("startup");
     onCleanup(() => {
       cancelled = true;
       for (const unlisten of unlisteners) unlisten();
@@ -761,8 +789,9 @@ function App() {
 
   const detailTabs = createMemo((): PanelTab[] => {
     const kind = store.selectedKind().kind;
+    const apiVersion = store.selectedKind().apiVersion;
     const tabs: PanelTab[] = ["detail", "yaml", "diff"];
-    if (supportsDataTab(store.selectedObject(), kind)) {
+    if (supportsDataTab(store.selectedObject(), kind, apiVersion)) {
       tabs.splice(1, 0, "data");
     }
     if (kind === "Pod") {
@@ -779,7 +808,8 @@ function App() {
     obj: K8sObject | null | undefined = store.selectedObject(),
   ): PanelTab {
     const kind = (obj?.kind as string) || store.selectedKind().kind;
-    return supportsDataTab(obj, kind) ? "data" : "detail";
+    const apiVersion = (obj?.apiVersion as string) || store.selectedKind().apiVersion;
+    return supportsDataTab(obj, kind, apiVersion) ? "data" : "detail";
   }
 
   createEffect(() => {
@@ -1443,6 +1473,22 @@ function App() {
     const status = obj.status as Record<string, unknown> | undefined;
     if (!status) return "-";
     if (typeof status.phase === "string") return status.phase;
+    if (sel.kind === "DaemonSet") {
+      const ready = typeof status.numberReady === "number" ? status.numberReady : 0;
+      const desired =
+        typeof status.desiredNumberScheduled === "number" ? status.desiredNumberScheduled : 0;
+      return `${ready}/${desired}`;
+    }
+    if (sel.kind === "Job") {
+      const spec = obj.spec as Record<string, unknown> | undefined;
+      const backoffLimit = typeof spec?.backoffLimit === "number" ? spec.backoffLimit : 6;
+      const completions = typeof spec?.completions === "number" ? spec.completions : 1;
+      const succeeded = typeof status.succeeded === "number" ? status.succeeded : 0;
+      const failed = typeof status.failed === "number" ? status.failed : 0;
+      if (succeeded >= completions) return "Completed";
+      if (failed >= backoffLimit) return "Failed";
+      return "Running";
+    }
     if (typeof status.readyReplicas === "number" && typeof status.replicas === "number") {
       return `${status.readyReplicas}/${status.replicas}`;
     }
@@ -1535,6 +1581,27 @@ function App() {
     return Number.isFinite(n) ? n : 0;
   }
 
+  function expiryTimestamp(obj: Record<string, unknown>): number {
+    const kind = (obj.kind as string) || store.selectedKind().kind;
+    const d = certificateExpiryFromObject({ ...obj, kind });
+    return d ? d.getTime() : Number.POSITIVE_INFINITY;
+  }
+
+  function expiryLabelFor(obj: Record<string, unknown>): {
+    text: string;
+    tone: "ok" | "warn" | "err" | "idle" | "muted";
+    title: string;
+  } {
+    const kind = (obj.kind as string) || store.selectedKind().kind;
+    const d = certificateExpiryFromObject({ ...obj, kind });
+    if (!d) return { text: "—", tone: "muted", title: "No certificate expiry found" };
+    return {
+      text: formatExpiryListLabel(d),
+      tone: expiryTone(d),
+      title: formatCertDate(d),
+    };
+  }
+
   function toggleSort(key: ListColumnId) {
     if (sortKey() === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -1617,6 +1684,9 @@ function App() {
         case "age":
           cmp = ageTimestamp(a) - ageTimestamp(b);
           break;
+        case "expires":
+          cmp = expiryTimestamp(a) - expiryTimestamp(b);
+          break;
       }
       return cmp * dir;
     });
@@ -1651,8 +1721,10 @@ function App() {
       namespace: discovered ? discovered.namespaced : kindHasNamespaceColumn(kind.kind),
       node: kindHasNodeColumn(kind.kind),
       version: coreNode,
+      status: kindHasStatusColumn(kind.kind, kind.apiVersion),
       pods: coreNode,
       metrics: kind.kind === "Pod" || coreNode,
+      expires: kindHasExpiresColumn(kind.kind, kind.apiVersion),
     };
   });
 
@@ -2295,6 +2367,7 @@ function App() {
                                         const node = podNodeName(obj) || "—";
                                         const labels = statusLabelsFor(obj);
                                         const phaseTitle = labels.map((l) => l.text).join(", ");
+                                        const expiry = expiryLabelFor(obj);
                                         return (
                                           <div
                                             class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
@@ -2382,6 +2455,13 @@ function App() {
                                             <Show when={colVisible("metrics")}>
                                               <span class="muted">{metricFor(obj)}</span>
                                             </Show>
+                                            <Show when={colVisible("expires")}>
+                                              <span class="status-labels" title={expiry.title}>
+                                                <span class={`status-label ${expiry.tone}`}>
+                                                  {expiry.text}
+                                                </span>
+                                              </span>
+                                            </Show>
                                             <Show when={colVisible("age")}>
                                               <span class="muted">
                                                 {ageFromTimestamp(
@@ -2433,7 +2513,15 @@ function App() {
                                                   class={`tab ${panel() === tab ? "active" : ""}`}
                                                   onClick={() => setPanel(tab)}
                                                 >
-                                                  {tab}
+                                                  {tab === "data" &&
+                                                  supportsCertificateView(
+                                                    obj(),
+                                                    store.selectedKind().kind,
+                                                    (obj().apiVersion as string) ||
+                                                      store.selectedKind().apiVersion,
+                                                  )
+                                                    ? "certs"
+                                                    : tab}
                                                 </button>
                                               )}
                                             </For>
@@ -2550,6 +2638,8 @@ function App() {
                                                     extractRelations(
                                                       obj(),
                                                       store.selectedKind().kind,
+                                                      store.apiResources[store.selectedContext()] ||
+                                                        [],
                                                     ),
                                                   ).length
                                                 }
@@ -2561,6 +2651,9 @@ function App() {
                                                       extractRelations(
                                                         obj(),
                                                         store.selectedKind().kind,
+                                                        store.apiResources[
+                                                          store.selectedContext()
+                                                        ] || [],
                                                       ),
                                                     )}
                                                   >
@@ -2706,29 +2799,102 @@ function App() {
                                           </Show>
 
                                           <Show when={panel() === "data"}>
-                                            <ResourceDataEditor
-                                              context={store.selectedContext()}
-                                              apiVersion={
-                                                (obj().apiVersion as string) ||
-                                                store.selectedKind().apiVersion
-                                              }
-                                              kind={
-                                                (obj().kind as string) || store.selectedKind().kind
-                                              }
-                                              namespace={objectNamespace(obj()) || null}
-                                              name={objectName(obj())}
-                                              objectId={objectKey(obj())}
-                                              data={resourceDataMap(obj())}
-                                              isSecret={isOpaqueSecret(
+                                            <Show
+                                              when={supportsCertificateView(
                                                 obj(),
                                                 store.selectedKind().kind,
+                                                (obj().apiVersion as string) ||
+                                                  store.selectedKind().apiVersion,
                                               )}
-                                              onStatus={showStatus}
-                                              onApplied={async () => {
-                                                await reloadCurrentList();
-                                                await reloadSelectedYaml();
-                                              }}
-                                            />
+                                              fallback={
+                                                <ResourceDataEditor
+                                                  context={store.selectedContext()}
+                                                  apiVersion={
+                                                    (obj().apiVersion as string) ||
+                                                    store.selectedKind().apiVersion
+                                                  }
+                                                  kind={
+                                                    (obj().kind as string) ||
+                                                    store.selectedKind().kind
+                                                  }
+                                                  namespace={objectNamespace(obj()) || null}
+                                                  name={objectName(obj())}
+                                                  objectId={objectKey(obj())}
+                                                  data={resourceDataMap(obj())}
+                                                  isSecret={isOpaqueSecret(
+                                                    obj(),
+                                                    store.selectedKind().kind,
+                                                  )}
+                                                  onStatus={showStatus}
+                                                  onApplied={async () => {
+                                                    await reloadCurrentList();
+                                                    await reloadSelectedYaml();
+                                                  }}
+                                                />
+                                              }
+                                            >
+                                              <Show
+                                                when={isCertManagerCertificate(
+                                                  obj(),
+                                                  store.selectedKind().kind,
+                                                  (obj().apiVersion as string) ||
+                                                    store.selectedKind().apiVersion,
+                                                )}
+                                                fallback={
+                                                  <Show
+                                                    when={isCertManagerCertificateRequest(
+                                                      obj(),
+                                                      store.selectedKind().kind,
+                                                      (obj().apiVersion as string) ||
+                                                        store.selectedKind().apiVersion,
+                                                    )}
+                                                    fallback={
+                                                      <SecretCertificateView
+                                                        data={resourceDataMap(obj())}
+                                                        secretType={
+                                                          typeof obj().type === "string"
+                                                            ? (obj().type as string)
+                                                            : null
+                                                        }
+                                                        sourceLabel={
+                                                          isCertificateSecret(
+                                                            obj(),
+                                                            store.selectedKind().kind,
+                                                          ) &&
+                                                          Object.keys(
+                                                            obj().metadata?.labels || {},
+                                                          ).some((k) =>
+                                                            k.includes("cert-manager.io"),
+                                                          )
+                                                            ? "cert-manager"
+                                                            : null
+                                                        }
+                                                      />
+                                                    }
+                                                  >
+                                                    <SecretCertificateView
+                                                      data={certificateRequestDataMap(obj())}
+                                                      sourceLabel="cert-manager"
+                                                      extraBadges={["CertificateRequest"]}
+                                                    />
+                                                  </Show>
+                                                }
+                                              >
+                                                <SecretCertificateView
+                                                  linkedSecret={
+                                                    certManagerSecretName(obj())
+                                                      ? {
+                                                          context: store.selectedContext(),
+                                                          namespace: objectNamespace(obj()) || null,
+                                                          name: certManagerSecretName(obj())!,
+                                                        }
+                                                      : null
+                                                  }
+                                                  sourceLabel="cert-manager"
+                                                  extraBadges={["Certificate"]}
+                                                />
+                                              </Show>
+                                            </Show>
                                           </Show>
 
                                           <Show when={panel() === "yaml"}>

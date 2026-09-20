@@ -40,6 +40,17 @@ const POLL_MS = 5000;
 
 export type NodeDetailAction = "cordon" | "uncordon" | "drain";
 
+type PodSortKey = "name" | "namespace" | "status" | "cpu" | "mem" | "restarts";
+
+const POD_SORT_COLUMNS: { id: PodSortKey; label: string }[] = [
+  { id: "name", label: "Name" },
+  { id: "namespace", label: "Namespace" },
+  { id: "status", label: "Status" },
+  { id: "cpu", label: "CPU" },
+  { id: "mem", label: "Mem" },
+  { id: "restarts", label: "Restarts" },
+];
+
 type Props = {
   context: string;
   node: Accessor<K8sObject>;
@@ -69,6 +80,8 @@ export function NodeDetailView(props: Props) {
   const [storageSamples, setStorageSamples] = createSignal<MetricSample[]>([]);
   const [podSamples, setPodSamples] = createSignal<MetricSample[]>([]);
   const [nodeEvents, setNodeEvents] = createSignal<NodeEvent[]>([]);
+  const [podSortKey, setPodSortKey] = createSignal<PodSortKey>("name");
+  const [podSortDir, setPodSortDir] = createSignal<"asc" | "desc">("asc");
 
   const name = createMemo(() => props.node().metadata?.name || props.node().name || "");
   const unschedulable = createMemo(() =>
@@ -192,6 +205,81 @@ export function NodeDetailView(props: Props) {
       map.set(`${m.namespace}/${m.name}`, m);
     }
     return map;
+  });
+
+  function togglePodSort(key: PodSortKey) {
+    if (podSortKey() === key) {
+      setPodSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setPodSortKey(key);
+      setPodSortDir(key === "restarts" || key === "cpu" || key === "mem" ? "desc" : "asc");
+    }
+  }
+
+  function podSortIndicator(key: PodSortKey) {
+    if (podSortKey() !== key) return "";
+    return podSortDir() === "asc" ? " ▲" : " ▼";
+  }
+
+  function cmpNullableNumber(a: number | null, b: number | null): number {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    return a - b;
+  }
+
+  const sortedPods = createMemo(() => {
+    const items = [...props.pods()];
+    const key = podSortKey();
+    const dir = podSortDir() === "asc" ? 1 : -1;
+    const metrics = podMetricMap();
+    items.sort((a, b) => {
+      let cmp = 0;
+      const aNs = a.metadata?.namespace || "";
+      const bNs = b.metadata?.namespace || "";
+      const aName = a.metadata?.name || "";
+      const bName = b.metadata?.name || "";
+      switch (key) {
+        case "name":
+          cmp = aName.localeCompare(bName, undefined, { sensitivity: "base", numeric: true });
+          break;
+        case "namespace":
+          cmp = aNs.localeCompare(bNs, undefined, { sensitivity: "base", numeric: true });
+          break;
+        case "status":
+          cmp = podPhaseLabel(a as unknown as Record<string, unknown>).text.localeCompare(
+            podPhaseLabel(b as unknown as Record<string, unknown>).text,
+            undefined,
+            { sensitivity: "base", numeric: true },
+          );
+          break;
+        case "cpu": {
+          const aCpu = parseCpuMillis(metrics.get(`${aNs}/${aName}`)?.cpu);
+          const bCpu = parseCpuMillis(metrics.get(`${bNs}/${bName}`)?.cpu);
+          cmp = cmpNullableNumber(aCpu, bCpu);
+          break;
+        }
+        case "mem": {
+          const aMem = parseMemoryBytes(metrics.get(`${aNs}/${aName}`)?.memory);
+          const bMem = parseMemoryBytes(metrics.get(`${bNs}/${bName}`)?.memory);
+          cmp = cmpNullableNumber(aMem, bMem);
+          break;
+        }
+        case "restarts":
+          cmp =
+            podRestartCount(a as unknown as Record<string, unknown>) -
+            podRestartCount(b as unknown as Record<string, unknown>);
+          break;
+      }
+      if (cmp === 0) {
+        cmp = `${aNs}/${aName}`.localeCompare(`${bNs}/${bName}`, undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+      }
+      return cmp * dir;
+    });
+    return items;
   });
 
   const resourceRows = createMemo(() => {
@@ -435,16 +523,24 @@ export function NodeDetailView(props: Props) {
               <table class="meta-table node-pods-table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Namespace</th>
-                    <th>Status</th>
-                    <th>CPU</th>
-                    <th>Mem</th>
-                    <th>Restarts</th>
+                    <For each={POD_SORT_COLUMNS}>
+                      {(col) => (
+                        <th>
+                          <button
+                            type="button"
+                            class={`sort-btn ${podSortKey() === col.id ? "active" : ""}`}
+                            onClick={() => togglePodSort(col.id)}
+                          >
+                            {col.label}
+                            {podSortIndicator(col.id)}
+                          </button>
+                        </th>
+                      )}
+                    </For>
                   </tr>
                 </thead>
                 <tbody>
-                  <For each={props.pods()}>
+                  <For each={sortedPods()}>
                     {(pod) => {
                       const ns = () => pod.metadata?.namespace || "";
                       const pname = () => pod.metadata?.name || "";
