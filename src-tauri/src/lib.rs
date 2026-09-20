@@ -172,6 +172,7 @@ pub fn run() {
             commands::resources::get_resource,
             commands::resources::get_resource_yaml,
             commands::resources::apply_yaml,
+            commands::resources::validate_yaml,
             commands::resources::patch_resource_data,
             commands::resources::delete_resource,
             commands::resources::start_resource_watch,
@@ -200,6 +201,14 @@ pub fn run() {
             commands::diff::diff_resources,
             commands::overview::get_workload_overview,
             commands::longhorn::get_longhorn_overview,
+            commands::helm::list_helm_releases,
+            commands::helm::get_helm_release,
+            commands::helm::helm_cli_available,
+            commands::helm::helm_uninstall,
+            commands::helm::helm_rollback,
+            commands::helm::helm_upgrade,
+            commands::helm::flux_helm_release_set_suspend,
+            commands::helm::flux_helm_release_reconcile,
             commands::telemetry::set_telemetry_enabled,
         ])
         .run(tauri::generate_context!())

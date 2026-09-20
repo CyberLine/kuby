@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod discovery;
 pub mod exec;
+pub mod helm;
 pub mod longhorn;
 pub mod manager;
 pub mod metrics;

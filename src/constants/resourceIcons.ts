@@ -31,6 +31,8 @@ const KIND_ICON: Record<string, string> = {
   CustomResourceDefinition: "crd",
   User: "user",
   Group: "group",
+  Helm: "crd",
+  HelmRelease: "crd",
 };
 
 const iconUrls = import.meta.glob("../assets/k8s-icons/*.svg", {
@@ -48,7 +50,7 @@ const crdUrl = urlForBasename("crd");
 
 /** Resolve icon URL for a resource kind (falls back to generic CRD icon). */
 export function resourceIconUrl(kind: string): string | null {
-  if (kind === "Overview" || kind === "Longhorn") return null;
+  if (kind === "Overview" || kind === "Longhorn" || kind === "Helm") return null;
   const basename = KIND_ICON[kind] || "crd";
   return urlForBasename(basename) || crdUrl;
 }

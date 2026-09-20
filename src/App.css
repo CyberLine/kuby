@@ -1517,6 +1517,36 @@ body.is-list-col-resizing .cm-editor {
   gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+  align-items: center;
+}
+
+.yaml-toolbar .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.yaml-validation-hint {
+  flex: 1;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.yaml-validation-hint.checking {
+  color: var(--muted);
+}
+
+.yaml-validation-hint.ok {
+  color: var(--diff-insert-text);
+}
+
+.yaml-validation-hint.error {
+  color: var(--danger-text);
 }
 
 .data-editor-toolbar {
@@ -3658,4 +3688,217 @@ html[data-theme="light"] .about-overlay {
 
 .node-info-block .meta-table {
   font-size: 11px;
+}
+
+/* —— Helm Releases —— */
+.content:has(> .helm-releases) {
+  display: block;
+  overflow: hidden;
+}
+
+.helm-releases {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  overflow: hidden;
+}
+
+.helm-releases.with-detail {
+  grid-template-columns: minmax(240px, 1fr) minmax(280px, 45%);
+}
+
+.helm-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 8px;
+  flex-shrink: 0;
+}
+
+.helm-toolbar-main h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.helm-toolbar-main .muted {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.helm-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.helm-toolbar-actions .search {
+  min-width: 180px;
+}
+
+.helm-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 8px 12px;
+}
+
+.helm-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.helm-table th,
+.helm-table td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.helm-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 1;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.helm-table tbody tr {
+  cursor: pointer;
+}
+
+.helm-table tbody tr:hover {
+  background: var(--bg-hover, color-mix(in srgb, var(--fg) 6%, transparent));
+}
+
+.helm-table tbody tr.selected {
+  background: var(--bg-selected, color-mix(in srgb, var(--accent, #3b82f6) 18%, transparent));
+}
+
+.helm-table .empty-cell {
+  text-align: center;
+  color: var(--muted);
+  padding: 24px;
+  white-space: normal;
+}
+
+.helm-table.compact th,
+.helm-table.compact td {
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: normal;
+}
+
+.helm-detail {
+  border-left: 1px solid var(--border);
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.helm-detail .detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 16px 8px;
+}
+
+.helm-detail .detail-header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.helm-detail .detail-header .muted {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+.helm-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 16px 12px;
+}
+
+.helm-detail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.helm-detail-body .helm-panel {
+  min-height: 0;
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.helm-detail-body .helm-panel > h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.helm-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.helm-values {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--bg, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.helm-upgrade-dialog {
+  max-width: 420px;
+}
+
+.helm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.helm-field input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+}
+
+.helm-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.helm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

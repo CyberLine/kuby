@@ -5,6 +5,9 @@ import type {
   ContextInfo,
   DiffHunk,
   DiscoveredResource,
+  HelmCliInfo,
+  HelmReleaseDetail,
+  HelmReleaseSummary,
   LonghornOverview,
   NamespaceListResult,
   NodeEvent,
@@ -34,6 +37,8 @@ export const api = {
     invoke<Record<string, unknown>>("get_resource", { ident }),
   getResourceYaml: (ident: ResourceIdentifier) => invoke<string>("get_resource_yaml", { ident }),
   applyYaml: (context: string, yaml: string) => invoke("apply_yaml", { context, yaml }),
+  validateYaml: (context: string, yaml: string) =>
+    invoke<{ ok: boolean; name?: string }>("validate_yaml", { context, yaml }),
   patchResourceData: (ident: ResourceIdentifier, data: Record<string, string>) =>
     invoke<Record<string, unknown>>("patch_resource_data", { ident, data }),
   deleteResource: (ident: ResourceIdentifier) => invoke<void>("delete_resource", { ident }),
@@ -161,6 +166,35 @@ export const api = {
         }),
   getLonghornOverview: (context: string) =>
     invoke<LonghornOverview>("get_longhorn_overview", { context }),
+  listHelmReleases: (context: string, namespaces: string[]) =>
+    invoke<HelmReleaseSummary[]>("list_helm_releases", { context, namespaces }),
+  getHelmRelease: (context: string, namespace: string, name: string) =>
+    invoke<HelmReleaseDetail>("get_helm_release", { context, namespace, name }),
+  helmCliAvailable: () => invoke<HelmCliInfo>("helm_cli_available"),
+  helmUninstall: (context: string, namespace: string, name: string) =>
+    invoke<string>("helm_uninstall", { context, namespace, name }),
+  helmRollback: (context: string, namespace: string, name: string, revision?: number | null) =>
+    invoke<string>("helm_rollback", { context, namespace, name, revision: revision ?? null }),
+  helmUpgrade: (
+    context: string,
+    namespace: string,
+    name: string,
+    chart: string,
+    reuseValues: boolean,
+  ) => invoke<string>("helm_upgrade", { context, namespace, name, chart, reuseValues }),
+  fluxHelmReleaseSetSuspend: (args: {
+    context: string;
+    apiVersion: string;
+    namespace: string;
+    name: string;
+    suspend: boolean;
+  }) => invoke<void>("flux_helm_release_set_suspend", args),
+  fluxHelmReleaseReconcile: (args: {
+    context: string;
+    apiVersion: string;
+    namespace: string;
+    name: string;
+  }) => invoke<void>("flux_helm_release_reconcile", args),
   diffResources: (leftYaml: string, rightYaml: string) =>
     invoke<{ hunks: DiffHunk[] }>("diff_resources", { leftYaml, rightYaml }),
   setTelemetryEnabled: (enabled: boolean) => invoke<void>("set_telemetry_enabled", { enabled }),

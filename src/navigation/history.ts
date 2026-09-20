@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 
 /** Session navigation history for resource browsing (no URL router). */
 
-export type NavMode = "list" | "detail" | "node" | "visualize" | "overview" | "longhorn";
+export type NavMode = "list" | "detail" | "node" | "visualize" | "overview" | "longhorn" | "helm";
 
 export type NavOwnerFilter = { kind: string; name: string; uid?: string };
 
@@ -36,6 +36,7 @@ export function locationLabel(loc: NavLocation): string {
   }
   if (loc.mode === "overview") return "Overview";
   if (loc.mode === "longhorn") return "Longhorn";
+  if (loc.mode === "helm") return "Helm Releases";
   return loc.kind;
 }
 

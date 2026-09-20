@@ -2,6 +2,7 @@ pub mod actions;
 pub mod cluster;
 pub mod diff;
 pub mod exec_cmd;
+pub mod helm;
 pub mod logs;
 pub mod longhorn;
 pub mod metrics_cmd;

@@ -15,6 +15,7 @@ function modeFromKind(kind: string, mode: NavMode): NavMode {
   if (mode === "node" || mode === "visualize") return mode;
   if (kind === "Overview") return "overview";
   if (kind === "Longhorn") return "longhorn";
+  if (kind === "Helm") return "helm";
   return mode;
 }
 
@@ -80,6 +81,11 @@ export function buildBreadcrumbs(loc: NavLocation): BreadcrumbSegment[] {
 
   if (mode === "longhorn") {
     crumbs.push({ id: "kind", label: "Longhorn", action: null });
+    return crumbs;
+  }
+
+  if (mode === "helm") {
+    crumbs.push({ id: "kind", label: "Helm Releases", action: null });
     return crumbs;
   }
 

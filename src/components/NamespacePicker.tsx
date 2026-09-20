@@ -127,8 +127,8 @@ export function NamespacePicker() {
       <Show when={restricted()}>
         <p class="ns-hint">
           Cannot list cluster namespaces. Seeded from kubeconfig
-          {access()?.defaultNamespace ? ` (${access()?.defaultNamespace})` : ""}. Add others by
-          name to switch into namespaces you can access.
+          {access()?.defaultNamespace ? ` (${access()?.defaultNamespace})` : ""}. Add others by name
+          to switch into namespaces you can access.
         </p>
       </Show>
       <Show when={selectedExtras().length && !dialogOpen()}>

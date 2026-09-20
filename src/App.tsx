@@ -22,6 +22,7 @@ import { AboutDialog } from "./components/AboutDialog";
 import { CodeEditor } from "./components/CodeEditor";
 import { ContextPicker } from "./components/ContextPicker";
 import { ExecTerminal } from "./components/ExecTerminal";
+import { HelmReleasesView } from "./components/HelmReleasesView";
 import { LoadingSpinner } from "./components/LoadingSpinner";
 import { LogViewer } from "./components/LogViewer";
 import { LonghornOverviewView } from "./components/LonghornOverviewView";
@@ -49,6 +50,7 @@ import { ThemeToggle } from "./components/ThemeToggle";
 import { VirtualList } from "./components/VirtualList";
 import {
   canDeleteKind,
+  canFluxHelmReleaseAction,
   canNodeAction,
   canRestartKind,
   canRollbackDeployment,
@@ -58,7 +60,9 @@ import {
 import {
   ageFromTimestamp,
   CURATED_NAV,
+  clusterHasFluxHelm,
   clusterHasLonghorn,
+  fluxHelmReleaseApiVersion,
   isPseudoKind,
   kindHasExpiresColumn,
   kindHasNamespaceColumn,
@@ -149,6 +153,25 @@ function overviewKindToResource(cardKind: string) {
   return OVERVIEW_KIND_MAP[cardKind] || null;
 }
 
+type YamlValidation =
+  | { status: "idle" }
+  | { status: "checking" }
+  | { status: "ok" }
+  | { status: "error"; message: string };
+
+function yamlValidationLabel(v: YamlValidation): string {
+  switch (v.status) {
+    case "checking":
+      return "Checking…";
+    case "ok":
+      return "Valid";
+    case "error":
+      return v.message;
+    default:
+      return "";
+  }
+}
+
 function resolveResourceApiVersion(
   kind: string,
   apiVersion: string | null | undefined,
@@ -221,6 +244,7 @@ function App() {
   const [statusProgress, setStatusProgress] = createSignal<number | null>(null);
   const [diffHunks, setDiffHunks] = createSignal<DiffHunk[]>([]);
   const [diffBase, setDiffBase] = createSignal("");
+  const [yamlValidation, setYamlValidation] = createSignal<YamlValidation>({ status: "idle" });
   const [metrics, setMetrics] = createSignal<PodMetrics[]>([]);
   const [nodeMetrics, setNodeMetrics] = createSignal<NodeMetrics[]>([]);
   const [pf, setPf] = createSignal<PortForwardInfo | null>(null);
@@ -565,6 +589,7 @@ function App() {
     else if (node) mode = "node";
     else if (kind.kind === "Overview") mode = "overview";
     else if (kind.kind === "Longhorn") mode = "longhorn";
+    else if (kind.kind === "Helm") mode = "helm";
     else if (store.selectedObjectKey()) mode = "detail";
 
     const labels = store.labelFilter();
@@ -787,10 +812,40 @@ function App() {
     return podContainerPorts(store.selectedObject());
   });
 
+  const yamlDirty = createMemo(() => {
+    const base = diffBase();
+    return Boolean(base) && yaml() !== base;
+  });
+
+  const canApplyYaml = createMemo(() => !yamlDirty() || yamlValidation().status === "ok");
+
+  createEffect(() => {
+    if (!yamlDirty()) {
+      setYamlValidation({ status: "idle" });
+      return;
+    }
+    const ctx = store.selectedContext();
+    const text = yaml();
+    setYamlValidation({ status: "checking" });
+    const handle = window.setTimeout(() => {
+      void api
+        .validateYaml(ctx, text)
+        .then(() => {
+          if (yaml() !== text || !yamlDirty()) return;
+          setYamlValidation({ status: "ok" });
+        })
+        .catch((e) => {
+          if (yaml() !== text || !yamlDirty()) return;
+          setYamlValidation({ status: "error", message: String(e) });
+        });
+    }, 400);
+    onCleanup(() => window.clearTimeout(handle));
+  });
+
   const detailTabs = createMemo((): PanelTab[] => {
     const kind = store.selectedKind().kind;
     const apiVersion = store.selectedKind().apiVersion;
-    const tabs: PanelTab[] = ["detail", "yaml", "diff"];
+    const tabs: PanelTab[] = ["detail", "yaml"];
     if (supportsDataTab(store.selectedObject(), kind, apiVersion)) {
       tabs.splice(1, 0, "data");
     }
@@ -800,6 +855,9 @@ function App() {
         const execIdx = tabs.indexOf("exec");
         tabs.splice(execIdx + 1, 0, "portforward");
       }
+    }
+    if (yamlDirty()) {
+      tabs.push("diff");
     }
     return tabs;
   });
@@ -930,8 +988,20 @@ function App() {
   const navItems = createMemo(() => {
     if (!showAllApis()) {
       const ctx = store.selectedContext();
-      const hasLonghorn = clusterHasLonghorn(store.apiResources[ctx] || []);
-      return CURATED_NAV.filter((item) => item.kind !== "Longhorn" || hasLonghorn);
+      const discovered = store.apiResources[ctx] || [];
+      const hasLonghorn = clusterHasLonghorn(discovered);
+      const hasFluxHelm = clusterHasFluxHelm(discovered);
+      const fluxAv = fluxHelmReleaseApiVersion(discovered);
+      return CURATED_NAV.filter((item) => {
+        if (item.kind === "Longhorn") return hasLonghorn;
+        if (item.kind === "HelmRelease") return hasFluxHelm;
+        return true;
+      }).map((item) => {
+        if (item.kind === "HelmRelease" && fluxAv) {
+          return { ...item, apiVersion: fluxAv };
+        }
+        return item;
+      });
     }
     const ctx = store.selectedContext();
     const discovered = store.apiResources[ctx] || [];
@@ -1022,9 +1092,12 @@ function App() {
   }
 
   async function applyYaml() {
+    if (!canApplyYaml()) return;
     try {
       await api.applyYaml(store.selectedContext(), yaml());
       showStatus("Applied successfully");
+      setDiffBase(yaml());
+      setYamlValidation({ status: "idle" });
       await reloadCurrentList();
     } catch (e) {
       showStatus(String(e), true);
@@ -1057,6 +1130,12 @@ function App() {
     } catch (e) {
       showStatus(String(e), true);
     }
+  }
+
+  function undoYaml() {
+    setYaml(diffBase());
+    setDiffHunks([]);
+    setYamlValidation({ status: "idle" });
   }
 
   async function doAction(action: string) {
@@ -1145,6 +1224,95 @@ function App() {
     } catch (e) {
       showStatus(String(e), true);
     }
+  }
+
+  function isFluxHelmReleaseSuspended(obj: K8sObject): boolean {
+    const spec = obj.spec as { suspend?: boolean } | undefined;
+    return Boolean(spec?.suspend);
+  }
+
+  async function runFluxHelmReleaseAction(
+    action: "suspend" | "resume" | "reconcile",
+    keys: string[],
+  ) {
+    setCtxMenu(null);
+    const kind = store.selectedKind();
+    if (!canFluxHelmReleaseAction(kind.kind, kind.apiVersion) || !keys.length) return;
+    const objs = objectsByKeys(keys);
+    if (!objs.length) return;
+
+    const targets =
+      action === "suspend"
+        ? objs.filter((o) => !isFluxHelmReleaseSuspended(o))
+        : action === "resume"
+          ? objs.filter((o) => isFluxHelmReleaseSuspended(o))
+          : objs;
+    if (!targets.length) {
+      showStatus(
+        action === "suspend"
+          ? "All selected HelmReleases are already suspended"
+          : action === "resume"
+            ? "No selected HelmReleases are suspended"
+            : "Nothing to reconcile",
+      );
+      return;
+    }
+
+    if (action === "suspend" || action === "resume") {
+      const ok = await confirmAction(
+        `${action === "suspend" ? "Suspend" : "Resume"} ${targets.length} HelmRelease${
+          targets.length === 1 ? "" : "s"
+        }?`,
+      );
+      if (!ok) return;
+    }
+
+    const ctx = store.selectedContext();
+    let okCount = 0;
+    const errors: string[] = [];
+    for (const obj of targets) {
+      const name = objectName(obj);
+      const ns = objectNamespace(obj);
+      const apiVersion = (obj.apiVersion as string) || kind.apiVersion;
+      try {
+        if (action === "reconcile") {
+          await api.fluxHelmReleaseReconcile({
+            context: ctx,
+            apiVersion,
+            namespace: ns,
+            name,
+          });
+        } else {
+          await api.fluxHelmReleaseSetSuspend({
+            context: ctx,
+            apiVersion,
+            namespace: ns,
+            name,
+            suspend: action === "suspend",
+          });
+        }
+        okCount += 1;
+      } catch (e) {
+        errors.push(`${name}: ${String(e)}`);
+      }
+    }
+
+    if (errors.length) {
+      showStatus(
+        `${action} ${okCount}/${targets.length}. ${errors.slice(0, 3).join(" · ")}`,
+        true,
+        10000,
+      );
+    } else {
+      showStatus(
+        action === "reconcile"
+          ? `Reconcile requested for ${okCount} HelmRelease${okCount === 1 ? "" : "s"}`
+          : `${action === "suspend" ? "Suspended" : "Resumed"} ${okCount} HelmRelease${
+              okCount === 1 ? "" : "s"
+            }`,
+      );
+    }
+    await reloadCurrentList();
   }
 
   function objectsByKeys(keys: string[]): K8sObject[] {
@@ -2244,345 +2412,21 @@ function App() {
                           <Show
                             when={store.selectedKind().kind === "Longhorn"}
                             fallback={
-                              <div class="resource-layout">
-                                <section class="list-pane">
-                                  <Show when={checkedKeys().size > 0}>
-                                    <div class="selection-bar">
-                                      <span>{checkedKeys().size} selected</span>
-                                      <div class="selection-bar-actions">
-                                        <Show when={canDeleteKind(store.selectedKind().kind)}>
-                                          <button
-                                            class="btn danger"
-                                            onClick={() => void deleteKeys([...checkedKeys()])}
-                                          >
-                                            Delete
-                                          </button>
-                                        </Show>
-                                        <Show
-                                          when={canNodeAction(
-                                            store.selectedKind().kind,
-                                            store.selectedKind().apiVersion,
-                                          )}
-                                        >
-                                          <Show
-                                            when={selectionHasSchedulableNode([...checkedKeys()])}
-                                          >
-                                            <button
-                                              class="btn"
-                                              onClick={() =>
-                                                void runNodeAction("cordon", [...checkedKeys()])
-                                              }
-                                            >
-                                              Cordon
-                                            </button>
-                                          </Show>
-                                          <Show when={selectionHasCordonedNode([...checkedKeys()])}>
-                                            <button
-                                              class="btn"
-                                              onClick={() =>
-                                                void runNodeAction("uncordon", [...checkedKeys()])
-                                              }
-                                            >
-                                              Uncordon
-                                            </button>
-                                          </Show>
-                                          <button
-                                            class="btn"
-                                            onClick={() =>
-                                              void runNodeAction("drain", [...checkedKeys()])
-                                            }
-                                          >
-                                            Drain
-                                          </button>
-                                        </Show>
-                                        <button class="btn ghost" onClick={() => clearChecked()}>
-                                          Clear
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </Show>
-                                  <div class="list-body" aria-busy={store.listLoading()}>
-                                    <VirtualList
-                                      items={sortedObjects()}
-                                      itemHeight={36}
-                                      class="resource-list"
-                                      header={
-                                        <div
-                                          class="row head"
-                                          style={{ "grid-template-columns": listGridTemplate() }}
-                                        >
-                                          <label class="row-check" title="Select all (Ctrl/⌘A)">
-                                            <input
-                                              type="checkbox"
-                                              checked={
-                                                sortedObjects().length > 0 &&
-                                                sortedObjects().every((o) =>
-                                                  checkedKeys().has(objectKey(o)),
-                                                )
-                                              }
-                                              onChange={(e) => {
-                                                if (e.currentTarget.checked) {
-                                                  selectAllVisible();
-                                                } else {
-                                                  clearChecked();
-                                                }
-                                              }}
-                                            />
-                                          </label>
-                                          <For each={listVisibleColumns()}>
-                                            {(id) => (
-                                              <div class="col-head">
-                                                <button
-                                                  type="button"
-                                                  class={`sort-btn ${sortKey() === id ? "active" : ""}`}
-                                                  onClick={() => toggleSort(id)}
-                                                >
-                                                  {LIST_COLUMN_META[id].label}
-                                                  {sortIndicator(id)}
-                                                </button>
-                                                <div
-                                                  class="col-resize"
-                                                  role="separator"
-                                                  aria-orientation="vertical"
-                                                  aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
-                                                  title="Drag to resize · double-click to reset"
-                                                  onPointerDown={(e) =>
-                                                    onListColResizePointerDown(id, e)
-                                                  }
-                                                  onPointerMove={onListColResizePointerMove}
-                                                  onPointerUp={onListColResizePointerUp}
-                                                  onPointerCancel={endListColResize}
-                                                  onLostPointerCapture={endListColResize}
-                                                  onDblClick={(e) => onListColResizeDblClick(id, e)}
-                                                />
-                                              </div>
-                                            )}
-                                          </For>
-                                        </div>
-                                      }
-                                      renderItem={(obj, index) => {
-                                        const key = objectKey(obj);
-                                        const name = objectName(obj);
-                                        const ns = objectNamespace(obj) || "—";
-                                        const node = podNodeName(obj) || "—";
-                                        const labels = statusLabelsFor(obj);
-                                        const phaseTitle = labels.map((l) => l.text).join(", ");
-                                        const expiry = expiryLabelFor(obj);
-                                        return (
-                                          <div
-                                            class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
-                                              checkedKeys().has(key) ? "checked" : ""
-                                            }`}
-                                            style={{ "grid-template-columns": listGridTemplate() }}
-                                            onClick={(e) => onRowClick(obj, index, e)}
-                                            onContextMenu={(e) => onRowContextMenu(obj, index, e)}
-                                            role="button"
-                                            tabIndex={0}
-                                          >
-                                            <label
-                                              class="row-check"
-                                              onClick={(e) => e.stopPropagation()}
-                                              onDblClick={(e) => e.stopPropagation()}
-                                            >
-                                              <input
-                                                type="checkbox"
-                                                checked={checkedKeys().has(key)}
-                                                onChange={() => {
-                                                  toggleChecked(key);
-                                                  setLastClickedIndex(index);
-                                                }}
-                                              />
-                                            </label>
-                                            <Show when={colVisible("name")}>
-                                              <span class="mono name-with-action" title={name}>
-                                                <span class="name-text">{name}</span>
-                                                <Show
-                                                  when={store.selectedKind().kind === "Namespace"}
-                                                >
-                                                  <button
-                                                    type="button"
-                                                    class="btn ghost row-visualize"
-                                                    title={`Visualize ${name}`}
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      void openVisualize(name);
-                                                    }}
-                                                  >
-                                                    Visualize
-                                                  </button>
-                                                </Show>
-                                              </span>
-                                            </Show>
-                                            <Show when={colVisible("namespace")}>
-                                              <span title={ns}>{ns}</span>
-                                            </Show>
-                                            <Show when={colVisible("node")}>
-                                              <span class="mono" title={node}>
-                                                {node}
-                                              </span>
-                                            </Show>
-                                            <Show when={colVisible("version")}>
-                                              <span class="status-labels">
-                                                <Show
-                                                  when={nodeKubeletVersion(obj)}
-                                                  fallback={<span class="muted">—</span>}
-                                                >
-                                                  {(v) => (
-                                                    <span class="status-label muted">{v()}</span>
-                                                  )}
-                                                </Show>
-                                              </span>
-                                            </Show>
-                                            <Show when={colVisible("status")}>
-                                              <span class="status-labels" title={phaseTitle}>
-                                                <For each={labels}>
-                                                  {(label) => (
-                                                    <span class={`status-label ${label.tone}`}>
-                                                      {label.text}
-                                                    </span>
-                                                  )}
-                                                </For>
-                                              </span>
-                                            </Show>
-                                            <Show when={colVisible("pods")}>
-                                              <span
-                                                class="muted"
-                                                title="Running pods / allocatable pod limit"
-                                              >
-                                                {podsForNode(obj)}
-                                              </span>
-                                            </Show>
-                                            <Show when={colVisible("metrics")}>
-                                              <span class="muted">{metricFor(obj)}</span>
-                                            </Show>
-                                            <Show when={colVisible("expires")}>
-                                              <span class="status-labels" title={expiry.title}>
-                                                <span class={`status-label ${expiry.tone}`}>
-                                                  {expiry.text}
-                                                </span>
-                                              </span>
-                                            </Show>
-                                            <Show when={colVisible("age")}>
-                                              <span class="muted">
-                                                {ageFromTimestamp(
-                                                  obj.metadata?.creationTimestamp as string,
-                                                )}
-                                              </span>
-                                            </Show>
-                                          </div>
-                                        );
-                                      }}
-                                    />
-                                    <Show when={store.listLoading() && !sortedObjects().length}>
-                                      <div class="list-status">
-                                        <LoadingSpinner
-                                          label={`Loading ${store.selectedKind().kind}…`}
-                                        />
-                                      </div>
-                                    </Show>
-                                    <Show when={!store.listLoading() && !sortedObjects().length}>
-                                      <div class="list-status">{emptyListMessage()}</div>
-                                    </Show>
-                                  </div>
-                                </section>
-
-                                <Show when={store.selectedObjectKey()}>
-                                  <Show when={store.selectedObject()}>
-                                    {(obj) => (
-                                      <>
-                                        <div
-                                          class="pane-splitter"
-                                          role="separator"
-                                          aria-orientation="vertical"
-                                          aria-label="Resize detail panel"
-                                          title="Drag to resize"
-                                          tabIndex={0}
-                                          onPointerDown={onSplitterPointerDown}
-                                          onPointerMove={onSplitterPointerMove}
-                                          onPointerUp={onSplitterPointerUp}
-                                          onPointerCancel={endDetailResize}
-                                          onLostPointerCapture={endDetailResize}
-                                          onDblClick={onSplitterDblClick}
-                                          onKeyDown={onSplitterKeyDown}
-                                        />
-                                        <section class="detail-pane" ref={detailPaneEl}>
-                                          <div class="detail-tabs">
-                                            <For each={detailTabs()}>
-                                              {(tab) => (
-                                                <button
-                                                  class={`tab ${panel() === tab ? "active" : ""}`}
-                                                  onClick={() => setPanel(tab)}
-                                                >
-                                                  {tab === "data" &&
-                                                  supportsCertificateView(
-                                                    obj(),
-                                                    store.selectedKind().kind,
-                                                    (obj().apiVersion as string) ||
-                                                      store.selectedKind().apiVersion,
-                                                  )
-                                                    ? "certs"
-                                                    : tab}
-                                                </button>
-                                              )}
-                                            </For>
-                                            <button
-                                              type="button"
-                                              class="pane-close"
-                                              title="Close"
-                                              aria-label="Close detail panel"
-                                              onClick={closeDetailPanel}
-                                            >
-                                              ×
-                                            </button>
-                                          </div>
-
-                                          <div class="detail-actions">
-                                            <Show when={canScaleKind(store.selectedKind().kind)}>
-                                              <input
-                                                type="number"
-                                                min="0"
-                                                class="scale-input"
-                                                value={scaleReplicas()}
-                                                onInput={(e) =>
-                                                  setScaleReplicas(Number(e.currentTarget.value))
-                                                }
-                                              />
+                              <Show
+                                when={store.selectedKind().kind === "Helm"}
+                                fallback={
+                                  <div class="resource-layout">
+                                    <section class="list-pane">
+                                      <Show when={checkedKeys().size > 0}>
+                                        <div class="selection-bar">
+                                          <span>{checkedKeys().size} selected</span>
+                                          <div class="selection-bar-actions">
+                                            <Show when={canDeleteKind(store.selectedKind().kind)}>
                                               <button
-                                                class="btn"
-                                                onClick={() => void doAction("scale")}
+                                                class="btn danger"
+                                                onClick={() => void deleteKeys([...checkedKeys()])}
                                               >
-                                                Scale
-                                              </button>
-                                            </Show>
-                                            <Show when={canRestartKind(store.selectedKind().kind)}>
-                                              <button
-                                                class="btn"
-                                                onClick={() => void doAction("restart")}
-                                              >
-                                                Restart
-                                              </button>
-                                            </Show>
-                                            <Show
-                                              when={canRollbackDeployment(
-                                                store.selectedKind().kind,
-                                              )}
-                                            >
-                                              <button class="btn" onClick={() => void doRollback()}>
-                                                Rollback
-                                              </button>
-                                            </Show>
-                                            <Show
-                                              when={
-                                                store.selectedKind().kind === "ReplicaSet" &&
-                                                canRollbackReplicaSet(obj(), replicaSetCurrent())
-                                              }
-                                            >
-                                              <button
-                                                class="btn"
-                                                title="Roll the parent Deployment back to this ReplicaSet revision"
-                                                onClick={() => void doRollback(obj())}
-                                              >
-                                                Rollback to this revision
+                                                Delete
                                               </button>
                                             </Show>
                                             <Show
@@ -2591,22 +2435,28 @@ function App() {
                                                 store.selectedKind().apiVersion,
                                               )}
                                             >
-                                              <Show when={!isNodeUnschedulable(obj())}>
+                                              <Show
+                                                when={selectionHasSchedulableNode([
+                                                  ...checkedKeys(),
+                                                ])}
+                                              >
                                                 <button
                                                   class="btn"
                                                   onClick={() =>
-                                                    void runNodeAction("cordon", [objectKey(obj())])
+                                                    void runNodeAction("cordon", [...checkedKeys()])
                                                   }
                                                 >
                                                   Cordon
                                                 </button>
                                               </Show>
-                                              <Show when={isNodeUnschedulable(obj())}>
+                                              <Show
+                                                when={selectionHasCordonedNode([...checkedKeys()])}
+                                              >
                                                 <button
                                                   class="btn"
                                                   onClick={() =>
                                                     void runNodeAction("uncordon", [
-                                                      objectKey(obj()),
+                                                      ...checkedKeys(),
                                                     ])
                                                   }
                                                 >
@@ -2616,425 +2466,932 @@ function App() {
                                               <button
                                                 class="btn"
                                                 onClick={() =>
-                                                  void runNodeAction("drain", [objectKey(obj())])
+                                                  void runNodeAction("drain", [...checkedKeys()])
                                                 }
                                               >
                                                 Drain
                                               </button>
                                             </Show>
-                                            <Show when={selectedPodPorts().length > 0}>
-                                              <button class="btn" onClick={() => startPf()}>
-                                                Port-forward
+                                            <Show
+                                              when={canFluxHelmReleaseAction(
+                                                store.selectedKind().kind,
+                                                store.selectedKind().apiVersion,
+                                              )}
+                                            >
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runFluxHelmReleaseAction("suspend", [
+                                                    ...checkedKeys(),
+                                                  ])
+                                                }
+                                              >
+                                                Suspend
+                                              </button>
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runFluxHelmReleaseAction("resume", [
+                                                    ...checkedKeys(),
+                                                  ])
+                                                }
+                                              >
+                                                Resume
+                                              </button>
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runFluxHelmReleaseAction("reconcile", [
+                                                    ...checkedKeys(),
+                                                  ])
+                                                }
+                                              >
+                                                Reconcile
                                               </button>
                                             </Show>
+                                            <button
+                                              class="btn ghost"
+                                              onClick={() => clearChecked()}
+                                            >
+                                              Clear
+                                            </button>
                                           </div>
-
-                                          <Show when={panel() === "detail"}>
-                                            <div class="detail-body">
-                                              <h2>{objectName(obj())}</h2>
-                                              <Show
-                                                when={
-                                                  groupRelations(
-                                                    extractRelations(
-                                                      obj(),
-                                                      store.selectedKind().kind,
-                                                      store.apiResources[store.selectedContext()] ||
-                                                        [],
-                                                    ),
-                                                  ).length
-                                                }
-                                              >
-                                                <section class="relations">
-                                                  <h3>Related</h3>
-                                                  <For
-                                                    each={groupRelations(
-                                                      extractRelations(
-                                                        obj(),
-                                                        store.selectedKind().kind,
-                                                        store.apiResources[
-                                                          store.selectedContext()
-                                                        ] || [],
-                                                      ),
-                                                    )}
-                                                  >
-                                                    {(group) => (
-                                                      <div class="relation-group">
-                                                        <div class="relation-group-title">
-                                                          {group.group}
-                                                        </div>
-                                                        <div class="relation-links">
-                                                          <For each={group.links}>
-                                                            {(link) => (
-                                                              <button
-                                                                type="button"
-                                                                class="relation-link"
-                                                                title={[
-                                                                  link.kind,
-                                                                  link.name,
-                                                                  link.labelSelector &&
-                                                                    Object.entries(
-                                                                      link.labelSelector,
-                                                                    )
-                                                                      .map(([k, v]) => `${k}=${v}`)
-                                                                      .join(","),
-                                                                  link.owner &&
-                                                                    `owner ${link.owner.kind}/${link.owner.name}`,
-                                                                ]
-                                                                  .filter(Boolean)
-                                                                  .join(" · ")}
-                                                                onClick={() => openRelation(link)}
-                                                              >
-                                                                {link.title}
-                                                              </button>
-                                                            )}
-                                                          </For>
-                                                        </div>
-                                                      </div>
-                                                    )}
-                                                  </For>
-                                                </section>
-                                              </Show>
-                                              <Show when={store.selectedKind().kind === "Pod"}>
-                                                <PodContainersSection
-                                                  pod={obj()}
-                                                  metrics={podMetricsFor(
-                                                    obj() as unknown as Record<string, unknown>,
-                                                  )}
-                                                />
-                                              </Show>
-                                              <dl class="kv">
-                                                <dt>Kind</dt>
-                                                <dd>
-                                                  {String(obj().kind || store.selectedKind().kind)}
-                                                </dd>
-                                                <Show when={listColumnCaps().namespace}>
-                                                  <dt>Namespace</dt>
-                                                  <dd>{objectNamespace(obj()) || "—"}</dd>
-                                                </Show>
-                                                <Show when={listColumnCaps().node}>
-                                                  <dt>Node</dt>
-                                                  <dd>
-                                                    <Show
-                                                      when={podNodeName(obj())}
-                                                      fallback={<span class="mono muted">—</span>}
-                                                    >
-                                                      {(nodeName) => (
-                                                        <button
-                                                          type="button"
-                                                          class="linkish mono"
-                                                          title={`Open Node/${nodeName()}`}
-                                                          onClick={() =>
-                                                            openRelation({
-                                                              id: `pod-node-${nodeName()}`,
-                                                              group: "Cluster",
-                                                              title: `Node/${nodeName()}`,
-                                                              apiVersion: "v1",
-                                                              kind: "Node",
-                                                              namespace: null,
-                                                              name: nodeName(),
-                                                            })
-                                                          }
-                                                        >
-                                                          {nodeName()}
-                                                        </button>
-                                                      )}
-                                                    </Show>
-                                                  </dd>
-                                                </Show>
-                                                <dt>UID</dt>
-                                                <dd class="mono">{objectKey(obj())}</dd>
-                                              </dl>
-                                              <section class="detail-block">
-                                                <h3>Labels</h3>
-                                                <Show
-                                                  when={
-                                                    Object.keys(obj().metadata?.labels || {}).length
+                                        </div>
+                                      </Show>
+                                      <div class="list-body" aria-busy={store.listLoading()}>
+                                        <VirtualList
+                                          items={sortedObjects()}
+                                          itemHeight={36}
+                                          class="resource-list"
+                                          header={
+                                            <div
+                                              class="row head"
+                                              style={{
+                                                "grid-template-columns": listGridTemplate(),
+                                              }}
+                                            >
+                                              <label class="row-check" title="Select all (Ctrl/⌘A)">
+                                                <input
+                                                  type="checkbox"
+                                                  checked={
+                                                    sortedObjects().length > 0 &&
+                                                    sortedObjects().every((o) =>
+                                                      checkedKeys().has(objectKey(o)),
+                                                    )
                                                   }
-                                                  fallback={<span class="muted">—</span>}
-                                                >
-                                                  <table class="meta-table">
-                                                    <thead>
-                                                      <tr>
-                                                        <th>Key</th>
-                                                        <th>Value</th>
-                                                      </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                      <For
-                                                        each={Object.entries(
-                                                          obj().metadata?.labels || {},
-                                                        )}
-                                                      >
-                                                        {([key, value]) => (
-                                                          <tr>
-                                                            <td class="mono">{key}</td>
-                                                            <td class="mono">{String(value)}</td>
-                                                          </tr>
-                                                        )}
-                                                      </For>
-                                                    </tbody>
-                                                  </table>
-                                                </Show>
-                                              </section>
-                                              <Show
-                                                when={
-                                                  obj().status != null &&
-                                                  typeof obj().status === "object" &&
-                                                  Object.keys(obj().status as object).length > 0
-                                                }
-                                              >
-                                                <section class="detail-block">
-                                                  <h3>Status</h3>
-                                                  <div class="kv-json">
-                                                    <CodeEditor
-                                                      language="json"
-                                                      readOnly
-                                                      compact
-                                                      value={JSON.stringify(obj().status, null, 2)}
-                                                    />
-                                                  </div>
-                                                </section>
-                                              </Show>
-                                            </div>
-                                          </Show>
-
-                                          <Show when={panel() === "data"}>
-                                            <Show
-                                              when={supportsCertificateView(
-                                                obj(),
-                                                store.selectedKind().kind,
-                                                (obj().apiVersion as string) ||
-                                                  store.selectedKind().apiVersion,
-                                              )}
-                                              fallback={
-                                                <ResourceDataEditor
-                                                  context={store.selectedContext()}
-                                                  apiVersion={
-                                                    (obj().apiVersion as string) ||
-                                                    store.selectedKind().apiVersion
-                                                  }
-                                                  kind={
-                                                    (obj().kind as string) ||
-                                                    store.selectedKind().kind
-                                                  }
-                                                  namespace={objectNamespace(obj()) || null}
-                                                  name={objectName(obj())}
-                                                  objectId={objectKey(obj())}
-                                                  data={resourceDataMap(obj())}
-                                                  isSecret={isOpaqueSecret(
-                                                    obj(),
-                                                    store.selectedKind().kind,
-                                                  )}
-                                                  onStatus={showStatus}
-                                                  onApplied={async () => {
-                                                    await reloadCurrentList();
-                                                    await reloadSelectedYaml();
+                                                  onChange={(e) => {
+                                                    if (e.currentTarget.checked) {
+                                                      selectAllVisible();
+                                                    } else {
+                                                      clearChecked();
+                                                    }
                                                   }}
                                                 />
-                                              }
-                                            >
-                                              <Show
-                                                when={isCertManagerCertificate(
-                                                  obj(),
-                                                  store.selectedKind().kind,
-                                                  (obj().apiVersion as string) ||
-                                                    store.selectedKind().apiVersion,
+                                              </label>
+                                              <For each={listVisibleColumns()}>
+                                                {(id) => (
+                                                  <div class="col-head">
+                                                    <button
+                                                      type="button"
+                                                      class={`sort-btn ${sortKey() === id ? "active" : ""}`}
+                                                      onClick={() => toggleSort(id)}
+                                                    >
+                                                      {LIST_COLUMN_META[id].label}
+                                                      {sortIndicator(id)}
+                                                    </button>
+                                                    <div
+                                                      class="col-resize"
+                                                      role="separator"
+                                                      aria-orientation="vertical"
+                                                      aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
+                                                      title="Drag to resize · double-click to reset"
+                                                      onPointerDown={(e) =>
+                                                        onListColResizePointerDown(id, e)
+                                                      }
+                                                      onPointerMove={onListColResizePointerMove}
+                                                      onPointerUp={onListColResizePointerUp}
+                                                      onPointerCancel={endListColResize}
+                                                      onLostPointerCapture={endListColResize}
+                                                      onDblClick={(e) =>
+                                                        onListColResizeDblClick(id, e)
+                                                      }
+                                                    />
+                                                  </div>
                                                 )}
-                                                fallback={
+                                              </For>
+                                            </div>
+                                          }
+                                          renderItem={(obj, index) => {
+                                            const key = objectKey(obj);
+                                            const name = objectName(obj);
+                                            const ns = objectNamespace(obj) || "—";
+                                            const node = podNodeName(obj) || "—";
+                                            const labels = statusLabelsFor(obj);
+                                            const phaseTitle = labels.map((l) => l.text).join(", ");
+                                            const expiry = expiryLabelFor(obj);
+                                            return (
+                                              <div
+                                                class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
+                                                  checkedKeys().has(key) ? "checked" : ""
+                                                }`}
+                                                style={{
+                                                  "grid-template-columns": listGridTemplate(),
+                                                }}
+                                                onClick={(e) => onRowClick(obj, index, e)}
+                                                onContextMenu={(e) =>
+                                                  onRowContextMenu(obj, index, e)
+                                                }
+                                                role="button"
+                                                tabIndex={0}
+                                              >
+                                                <label
+                                                  class="row-check"
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  onDblClick={(e) => e.stopPropagation()}
+                                                >
+                                                  <input
+                                                    type="checkbox"
+                                                    checked={checkedKeys().has(key)}
+                                                    onChange={() => {
+                                                      toggleChecked(key);
+                                                      setLastClickedIndex(index);
+                                                    }}
+                                                  />
+                                                </label>
+                                                <Show when={colVisible("name")}>
+                                                  <span class="mono name-with-action" title={name}>
+                                                    <span class="name-text">{name}</span>
+                                                    <Show
+                                                      when={
+                                                        store.selectedKind().kind === "Namespace"
+                                                      }
+                                                    >
+                                                      <button
+                                                        type="button"
+                                                        class="btn ghost row-visualize"
+                                                        title={`Visualize ${name}`}
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          void openVisualize(name);
+                                                        }}
+                                                      >
+                                                        Visualize
+                                                      </button>
+                                                    </Show>
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("namespace")}>
+                                                  <span title={ns}>{ns}</span>
+                                                </Show>
+                                                <Show when={colVisible("node")}>
+                                                  <span class="mono" title={node}>
+                                                    {node}
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("version")}>
+                                                  <span class="status-labels">
+                                                    <Show
+                                                      when={nodeKubeletVersion(obj)}
+                                                      fallback={<span class="muted">—</span>}
+                                                    >
+                                                      {(v) => (
+                                                        <span class="status-label muted">
+                                                          {v()}
+                                                        </span>
+                                                      )}
+                                                    </Show>
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("status")}>
+                                                  <span class="status-labels" title={phaseTitle}>
+                                                    <For each={labels}>
+                                                      {(label) => (
+                                                        <span class={`status-label ${label.tone}`}>
+                                                          {label.text}
+                                                        </span>
+                                                      )}
+                                                    </For>
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("pods")}>
+                                                  <span
+                                                    class="muted"
+                                                    title="Running pods / allocatable pod limit"
+                                                  >
+                                                    {podsForNode(obj)}
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("metrics")}>
+                                                  <span class="muted">{metricFor(obj)}</span>
+                                                </Show>
+                                                <Show when={colVisible("expires")}>
+                                                  <span class="status-labels" title={expiry.title}>
+                                                    <span class={`status-label ${expiry.tone}`}>
+                                                      {expiry.text}
+                                                    </span>
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("age")}>
+                                                  <span class="muted">
+                                                    {ageFromTimestamp(
+                                                      obj.metadata?.creationTimestamp as string,
+                                                    )}
+                                                  </span>
+                                                </Show>
+                                              </div>
+                                            );
+                                          }}
+                                        />
+                                        <Show when={store.listLoading() && !sortedObjects().length}>
+                                          <div class="list-status">
+                                            <LoadingSpinner
+                                              label={`Loading ${store.selectedKind().kind}…`}
+                                            />
+                                          </div>
+                                        </Show>
+                                        <Show
+                                          when={!store.listLoading() && !sortedObjects().length}
+                                        >
+                                          <div class="list-status">{emptyListMessage()}</div>
+                                        </Show>
+                                      </div>
+                                    </section>
+
+                                    <Show when={store.selectedObjectKey()}>
+                                      <Show when={store.selectedObject()}>
+                                        {(obj) => (
+                                          <>
+                                            <div
+                                              class="pane-splitter"
+                                              role="separator"
+                                              aria-orientation="vertical"
+                                              aria-label="Resize detail panel"
+                                              title="Drag to resize"
+                                              tabIndex={0}
+                                              onPointerDown={onSplitterPointerDown}
+                                              onPointerMove={onSplitterPointerMove}
+                                              onPointerUp={onSplitterPointerUp}
+                                              onPointerCancel={endDetailResize}
+                                              onLostPointerCapture={endDetailResize}
+                                              onDblClick={onSplitterDblClick}
+                                              onKeyDown={onSplitterKeyDown}
+                                            />
+                                            <section class="detail-pane" ref={detailPaneEl}>
+                                              <div class="detail-tabs">
+                                                <For each={detailTabs()}>
+                                                  {(tab) => (
+                                                    <button
+                                                      class={`tab ${panel() === tab ? "active" : ""}`}
+                                                      onClick={() => {
+                                                        if (tab === "diff") void runDiff();
+                                                        else setPanel(tab);
+                                                      }}
+                                                    >
+                                                      {tab === "data" &&
+                                                      supportsCertificateView(
+                                                        obj(),
+                                                        store.selectedKind().kind,
+                                                        (obj().apiVersion as string) ||
+                                                          store.selectedKind().apiVersion,
+                                                      )
+                                                        ? "certs"
+                                                        : tab}
+                                                    </button>
+                                                  )}
+                                                </For>
+                                                <button
+                                                  type="button"
+                                                  class="pane-close"
+                                                  title="Close"
+                                                  aria-label="Close detail panel"
+                                                  onClick={closeDetailPanel}
+                                                >
+                                                  ×
+                                                </button>
+                                              </div>
+
+                                              <div class="detail-actions">
+                                                <Show
+                                                  when={canScaleKind(store.selectedKind().kind)}
+                                                >
+                                                  <input
+                                                    type="number"
+                                                    min="0"
+                                                    class="scale-input"
+                                                    value={scaleReplicas()}
+                                                    onInput={(e) =>
+                                                      setScaleReplicas(
+                                                        Number(e.currentTarget.value),
+                                                      )
+                                                    }
+                                                  />
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() => void doAction("scale")}
+                                                  >
+                                                    Scale
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={canRestartKind(store.selectedKind().kind)}
+                                                >
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() => void doAction("restart")}
+                                                  >
+                                                    Restart
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={canRollbackDeployment(
+                                                    store.selectedKind().kind,
+                                                  )}
+                                                >
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() => void doRollback()}
+                                                  >
+                                                    Rollback
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={
+                                                    store.selectedKind().kind === "ReplicaSet" &&
+                                                    canRollbackReplicaSet(
+                                                      obj(),
+                                                      replicaSetCurrent(),
+                                                    )
+                                                  }
+                                                >
+                                                  <button
+                                                    class="btn"
+                                                    title="Roll the parent Deployment back to this ReplicaSet revision"
+                                                    onClick={() => void doRollback(obj())}
+                                                  >
+                                                    Rollback to this revision
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={canFluxHelmReleaseAction(
+                                                    store.selectedKind().kind,
+                                                    store.selectedKind().apiVersion,
+                                                  )}
+                                                >
+                                                  <Show when={!isFluxHelmReleaseSuspended(obj())}>
+                                                    <button
+                                                      class="btn"
+                                                      onClick={() =>
+                                                        void runFluxHelmReleaseAction("suspend", [
+                                                          objectKey(obj()),
+                                                        ])
+                                                      }
+                                                    >
+                                                      Suspend
+                                                    </button>
+                                                  </Show>
+                                                  <Show when={isFluxHelmReleaseSuspended(obj())}>
+                                                    <button
+                                                      class="btn"
+                                                      onClick={() =>
+                                                        void runFluxHelmReleaseAction("resume", [
+                                                          objectKey(obj()),
+                                                        ])
+                                                      }
+                                                    >
+                                                      Resume
+                                                    </button>
+                                                  </Show>
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() =>
+                                                      void runFluxHelmReleaseAction("reconcile", [
+                                                        objectKey(obj()),
+                                                      ])
+                                                    }
+                                                  >
+                                                    Reconcile
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={canNodeAction(
+                                                    store.selectedKind().kind,
+                                                    store.selectedKind().apiVersion,
+                                                  )}
+                                                >
+                                                  <Show when={!isNodeUnschedulable(obj())}>
+                                                    <button
+                                                      class="btn"
+                                                      onClick={() =>
+                                                        void runNodeAction("cordon", [
+                                                          objectKey(obj()),
+                                                        ])
+                                                      }
+                                                    >
+                                                      Cordon
+                                                    </button>
+                                                  </Show>
+                                                  <Show when={isNodeUnschedulable(obj())}>
+                                                    <button
+                                                      class="btn"
+                                                      onClick={() =>
+                                                        void runNodeAction("uncordon", [
+                                                          objectKey(obj()),
+                                                        ])
+                                                      }
+                                                    >
+                                                      Uncordon
+                                                    </button>
+                                                  </Show>
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() =>
+                                                      void runNodeAction("drain", [
+                                                        objectKey(obj()),
+                                                      ])
+                                                    }
+                                                  >
+                                                    Drain
+                                                  </button>
+                                                </Show>
+                                                <Show when={selectedPodPorts().length > 0}>
+                                                  <button class="btn" onClick={() => startPf()}>
+                                                    Port-forward
+                                                  </button>
+                                                </Show>
+                                              </div>
+
+                                              <Show when={panel() === "detail"}>
+                                                <div class="detail-body">
+                                                  <h2>{objectName(obj())}</h2>
                                                   <Show
-                                                    when={isCertManagerCertificateRequest(
+                                                    when={
+                                                      groupRelations(
+                                                        extractRelations(
+                                                          obj(),
+                                                          store.selectedKind().kind,
+                                                          store.apiResources[
+                                                            store.selectedContext()
+                                                          ] || [],
+                                                        ),
+                                                      ).length
+                                                    }
+                                                  >
+                                                    <section class="relations">
+                                                      <h3>Related</h3>
+                                                      <For
+                                                        each={groupRelations(
+                                                          extractRelations(
+                                                            obj(),
+                                                            store.selectedKind().kind,
+                                                            store.apiResources[
+                                                              store.selectedContext()
+                                                            ] || [],
+                                                          ),
+                                                        )}
+                                                      >
+                                                        {(group) => (
+                                                          <div class="relation-group">
+                                                            <div class="relation-group-title">
+                                                              {group.group}
+                                                            </div>
+                                                            <div class="relation-links">
+                                                              <For each={group.links}>
+                                                                {(link) => (
+                                                                  <button
+                                                                    type="button"
+                                                                    class="relation-link"
+                                                                    title={[
+                                                                      link.kind,
+                                                                      link.name,
+                                                                      link.labelSelector &&
+                                                                        Object.entries(
+                                                                          link.labelSelector,
+                                                                        )
+                                                                          .map(
+                                                                            ([k, v]) => `${k}=${v}`,
+                                                                          )
+                                                                          .join(","),
+                                                                      link.owner &&
+                                                                        `owner ${link.owner.kind}/${link.owner.name}`,
+                                                                    ]
+                                                                      .filter(Boolean)
+                                                                      .join(" · ")}
+                                                                    onClick={() =>
+                                                                      openRelation(link)
+                                                                    }
+                                                                  >
+                                                                    {link.title}
+                                                                  </button>
+                                                                )}
+                                                              </For>
+                                                            </div>
+                                                          </div>
+                                                        )}
+                                                      </For>
+                                                    </section>
+                                                  </Show>
+                                                  <Show when={store.selectedKind().kind === "Pod"}>
+                                                    <PodContainersSection
+                                                      pod={obj()}
+                                                      metrics={podMetricsFor(
+                                                        obj() as unknown as Record<string, unknown>,
+                                                      )}
+                                                    />
+                                                  </Show>
+                                                  <dl class="kv">
+                                                    <dt>Kind</dt>
+                                                    <dd>
+                                                      {String(
+                                                        obj().kind || store.selectedKind().kind,
+                                                      )}
+                                                    </dd>
+                                                    <Show when={listColumnCaps().namespace}>
+                                                      <dt>Namespace</dt>
+                                                      <dd>{objectNamespace(obj()) || "—"}</dd>
+                                                    </Show>
+                                                    <Show when={listColumnCaps().node}>
+                                                      <dt>Node</dt>
+                                                      <dd>
+                                                        <Show
+                                                          when={podNodeName(obj())}
+                                                          fallback={
+                                                            <span class="mono muted">—</span>
+                                                          }
+                                                        >
+                                                          {(nodeName) => (
+                                                            <button
+                                                              type="button"
+                                                              class="linkish mono"
+                                                              title={`Open Node/${nodeName()}`}
+                                                              onClick={() =>
+                                                                openRelation({
+                                                                  id: `pod-node-${nodeName()}`,
+                                                                  group: "Cluster",
+                                                                  title: `Node/${nodeName()}`,
+                                                                  apiVersion: "v1",
+                                                                  kind: "Node",
+                                                                  namespace: null,
+                                                                  name: nodeName(),
+                                                                })
+                                                              }
+                                                            >
+                                                              {nodeName()}
+                                                            </button>
+                                                          )}
+                                                        </Show>
+                                                      </dd>
+                                                    </Show>
+                                                    <dt>UID</dt>
+                                                    <dd class="mono">{objectKey(obj())}</dd>
+                                                  </dl>
+                                                  <section class="detail-block">
+                                                    <h3>Labels</h3>
+                                                    <Show
+                                                      when={
+                                                        Object.keys(obj().metadata?.labels || {})
+                                                          .length
+                                                      }
+                                                      fallback={<span class="muted">—</span>}
+                                                    >
+                                                      <table class="meta-table">
+                                                        <thead>
+                                                          <tr>
+                                                            <th>Key</th>
+                                                            <th>Value</th>
+                                                          </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                          <For
+                                                            each={Object.entries(
+                                                              obj().metadata?.labels || {},
+                                                            )}
+                                                          >
+                                                            {([key, value]) => (
+                                                              <tr>
+                                                                <td class="mono">{key}</td>
+                                                                <td class="mono">
+                                                                  {String(value)}
+                                                                </td>
+                                                              </tr>
+                                                            )}
+                                                          </For>
+                                                        </tbody>
+                                                      </table>
+                                                    </Show>
+                                                  </section>
+                                                  <Show
+                                                    when={
+                                                      obj().status != null &&
+                                                      typeof obj().status === "object" &&
+                                                      Object.keys(obj().status as object).length > 0
+                                                    }
+                                                  >
+                                                    <section class="detail-block">
+                                                      <h3>Status</h3>
+                                                      <div class="kv-json">
+                                                        <CodeEditor
+                                                          language="json"
+                                                          readOnly
+                                                          compact
+                                                          value={JSON.stringify(
+                                                            obj().status,
+                                                            null,
+                                                            2,
+                                                          )}
+                                                        />
+                                                      </div>
+                                                    </section>
+                                                  </Show>
+                                                </div>
+                                              </Show>
+
+                                              <Show when={panel() === "data"}>
+                                                <Show
+                                                  when={supportsCertificateView(
+                                                    obj(),
+                                                    store.selectedKind().kind,
+                                                    (obj().apiVersion as string) ||
+                                                      store.selectedKind().apiVersion,
+                                                  )}
+                                                  fallback={
+                                                    <ResourceDataEditor
+                                                      context={store.selectedContext()}
+                                                      apiVersion={
+                                                        (obj().apiVersion as string) ||
+                                                        store.selectedKind().apiVersion
+                                                      }
+                                                      kind={
+                                                        (obj().kind as string) ||
+                                                        store.selectedKind().kind
+                                                      }
+                                                      namespace={objectNamespace(obj()) || null}
+                                                      name={objectName(obj())}
+                                                      objectId={objectKey(obj())}
+                                                      data={resourceDataMap(obj())}
+                                                      isSecret={isOpaqueSecret(
+                                                        obj(),
+                                                        store.selectedKind().kind,
+                                                      )}
+                                                      onStatus={showStatus}
+                                                      onApplied={async () => {
+                                                        await reloadCurrentList();
+                                                        await reloadSelectedYaml();
+                                                      }}
+                                                    />
+                                                  }
+                                                >
+                                                  <Show
+                                                    when={isCertManagerCertificate(
                                                       obj(),
                                                       store.selectedKind().kind,
                                                       (obj().apiVersion as string) ||
                                                         store.selectedKind().apiVersion,
                                                     )}
                                                     fallback={
-                                                      <SecretCertificateView
-                                                        data={resourceDataMap(obj())}
-                                                        secretType={
-                                                          typeof obj().type === "string"
-                                                            ? (obj().type as string)
-                                                            : null
+                                                      <Show
+                                                        when={isCertManagerCertificateRequest(
+                                                          obj(),
+                                                          store.selectedKind().kind,
+                                                          (obj().apiVersion as string) ||
+                                                            store.selectedKind().apiVersion,
+                                                        )}
+                                                        fallback={
+                                                          <SecretCertificateView
+                                                            data={resourceDataMap(obj())}
+                                                            secretType={
+                                                              typeof obj().type === "string"
+                                                                ? (obj().type as string)
+                                                                : null
+                                                            }
+                                                            sourceLabel={
+                                                              isCertificateSecret(
+                                                                obj(),
+                                                                store.selectedKind().kind,
+                                                              ) &&
+                                                              Object.keys(
+                                                                obj().metadata?.labels || {},
+                                                              ).some((k) =>
+                                                                k.includes("cert-manager.io"),
+                                                              )
+                                                                ? "cert-manager"
+                                                                : null
+                                                            }
+                                                          />
                                                         }
-                                                        sourceLabel={
-                                                          isCertificateSecret(
-                                                            obj(),
-                                                            store.selectedKind().kind,
-                                                          ) &&
-                                                          Object.keys(
-                                                            obj().metadata?.labels || {},
-                                                          ).some((k) =>
-                                                            k.includes("cert-manager.io"),
-                                                          )
-                                                            ? "cert-manager"
-                                                            : null
-                                                        }
-                                                      />
+                                                      >
+                                                        <SecretCertificateView
+                                                          data={certificateRequestDataMap(obj())}
+                                                          sourceLabel="cert-manager"
+                                                          extraBadges={["CertificateRequest"]}
+                                                        />
+                                                      </Show>
                                                     }
                                                   >
                                                     <SecretCertificateView
-                                                      data={certificateRequestDataMap(obj())}
+                                                      linkedSecret={
+                                                        certManagerSecretName(obj())
+                                                          ? {
+                                                              context: store.selectedContext(),
+                                                              namespace:
+                                                                objectNamespace(obj()) || null,
+                                                              name: certManagerSecretName(obj())!,
+                                                            }
+                                                          : null
+                                                      }
                                                       sourceLabel="cert-manager"
-                                                      extraBadges={["CertificateRequest"]}
+                                                      extraBadges={["Certificate"]}
                                                     />
                                                   </Show>
-                                                }
-                                              >
-                                                <SecretCertificateView
-                                                  linkedSecret={
-                                                    certManagerSecretName(obj())
-                                                      ? {
-                                                          context: store.selectedContext(),
-                                                          namespace: objectNamespace(obj()) || null,
-                                                          name: certManagerSecretName(obj())!,
-                                                        }
-                                                      : null
+                                                </Show>
+                                              </Show>
+
+                                              <Show when={panel() === "yaml"}>
+                                                <div class="yaml-wrap">
+                                                  <div class="yaml-toolbar">
+                                                    <button
+                                                      class="btn"
+                                                      disabled={!canApplyYaml()}
+                                                      onClick={() => applyYaml()}
+                                                    >
+                                                      Apply
+                                                    </button>
+                                                    <Show when={yamlDirty()}>
+                                                      <button
+                                                        class="btn ghost"
+                                                        onClick={() => runDiff()}
+                                                      >
+                                                        Diff vs loaded
+                                                      </button>
+                                                      <button
+                                                        class="btn ghost"
+                                                        onClick={() => undoYaml()}
+                                                      >
+                                                        Undo
+                                                      </button>
+                                                      <span
+                                                        class="yaml-validation-hint"
+                                                        classList={{
+                                                          ok: yamlValidation().status === "ok",
+                                                          error:
+                                                            yamlValidation().status === "error",
+                                                          checking:
+                                                            yamlValidation().status === "checking",
+                                                        }}
+                                                        title={yamlValidationLabel(
+                                                          yamlValidation(),
+                                                        )}
+                                                      >
+                                                        {yamlValidationLabel(yamlValidation())}
+                                                      </span>
+                                                    </Show>
+                                                  </div>
+                                                  <CodeEditor
+                                                    language="yaml"
+                                                    value={yaml()}
+                                                    onChange={setYaml}
+                                                  />
+                                                </div>
+                                              </Show>
+
+                                              <Show when={panel() === "logs"}>
+                                                <LogViewer
+                                                  context={store.selectedContext()}
+                                                  namespace={objectNamespace(obj())}
+                                                  pod={
+                                                    store.selectedKind().kind === "Pod"
+                                                      ? objectName(obj())
+                                                      : ""
                                                   }
-                                                  sourceLabel="cert-manager"
-                                                  extraBadges={["Certificate"]}
+                                                  containers={
+                                                    store.selectedKind().kind === "Pod"
+                                                      ? podContainerNames(obj())
+                                                      : []
+                                                  }
+                                                  aggregated={aggMode()}
+                                                  pods={
+                                                    aggMode()
+                                                      ? objects()
+                                                          .filter(
+                                                            () =>
+                                                              store.selectedKind().kind === "Pod",
+                                                          )
+                                                          .slice(0, 20)
+                                                          .map((p) => ({
+                                                            context: store.selectedContext(),
+                                                            namespace: objectNamespace(p),
+                                                            pod: objectName(p),
+                                                          }))
+                                                      : []
+                                                  }
                                                 />
                                               </Show>
-                                            </Show>
-                                          </Show>
 
-                                          <Show when={panel() === "yaml"}>
-                                            <div class="yaml-wrap">
-                                              <div class="yaml-toolbar">
-                                                <button class="btn" onClick={() => applyYaml()}>
-                                                  Apply
-                                                </button>
-                                                <button class="btn ghost" onClick={() => runDiff()}>
-                                                  Diff vs loaded
-                                                </button>
-                                              </div>
-                                              <CodeEditor
-                                                language="yaml"
-                                                value={yaml()}
-                                                onChange={setYaml}
-                                              />
-                                            </div>
-                                          </Show>
-
-                                          <Show when={panel() === "logs"}>
-                                            <LogViewer
-                                              context={store.selectedContext()}
-                                              namespace={objectNamespace(obj())}
-                                              pod={
-                                                store.selectedKind().kind === "Pod"
-                                                  ? objectName(obj())
-                                                  : ""
-                                              }
-                                              containers={
-                                                store.selectedKind().kind === "Pod"
-                                                  ? podContainerNames(obj())
-                                                  : []
-                                              }
-                                              aggregated={aggMode()}
-                                              pods={
-                                                aggMode()
-                                                  ? objects()
-                                                      .filter(
-                                                        () => store.selectedKind().kind === "Pod",
-                                                      )
-                                                      .slice(0, 20)
-                                                      .map((p) => ({
-                                                        context: store.selectedContext(),
-                                                        namespace: objectNamespace(p),
-                                                        pod: objectName(p),
-                                                      }))
-                                                  : []
-                                              }
-                                            />
-                                          </Show>
-
-                                          <Show when={panel() === "exec"}>
-                                            <ExecTerminal
-                                              context={store.selectedContext()}
-                                              namespace={objectNamespace(obj())}
-                                              pod={objectName(obj())}
-                                              containers={podContainerNames(obj())}
-                                            />
-                                          </Show>
-
-                                          <Show when={panel() === "diff"}>
-                                            <div class="diff-view">
-                                              <For each={diffHunks()}>
-                                                {(h) => (
-                                                  <div class={`diff-line ${h.tag}`}>{h.value}</div>
-                                                )}
-                                              </For>
-                                            </div>
-                                          </Show>
-
-                                          <Show when={panel() === "portforward"}>
-                                            <div class="pf-panel">
-                                              <div class="pf-form">
-                                                <label>
-                                                  Local
-                                                  <input
-                                                    type="number"
-                                                    value={localPort()}
-                                                    onInput={(e) =>
-                                                      setLocalPort(Number(e.currentTarget.value))
-                                                    }
-                                                  />
-                                                </label>
-                                                <label>
-                                                  Remote
-                                                  <select
-                                                    value={String(remotePort())}
-                                                    onChange={(e) =>
-                                                      setRemotePort(Number(e.currentTarget.value))
-                                                    }
-                                                  >
-                                                    <For each={selectedPodPorts()}>
-                                                      {(p) => (
-                                                        <option value={String(p.port)}>
-                                                          {formatPodPort(p)}
-                                                        </option>
-                                                      )}
-                                                    </For>
-                                                  </select>
-                                                </label>
-                                                <button class="btn" onClick={() => startPf()}>
-                                                  Start
-                                                </button>
-                                                <Show when={pf()}>
-                                                  {(info) => (
-                                                    <button
-                                                      class="btn danger"
-                                                      onClick={async () => {
-                                                        await api.stopPortForward(
-                                                          info().context,
-                                                          info().id,
-                                                        );
-                                                        setPf(null);
-                                                      }}
-                                                    >
-                                                      Stop :{info().localPort}
-                                                    </button>
-                                                  )}
-                                                </Show>
-                                              </div>
-                                              <Show when={pf()}>
-                                                {(info) => (
-                                                  <p>
-                                                    Forwarding{" "}
-                                                    <code>
-                                                      localhost:{info().localPort} → {info().pod}:
-                                                      {info().remotePort}
-                                                    </code>
-                                                  </p>
-                                                )}
+                                              <Show when={panel() === "exec"}>
+                                                <ExecTerminal
+                                                  context={store.selectedContext()}
+                                                  namespace={objectNamespace(obj())}
+                                                  pod={objectName(obj())}
+                                                  containers={podContainerNames(obj())}
+                                                />
                                               </Show>
-                                            </div>
-                                          </Show>
-                                        </section>
-                                      </>
-                                    )}
-                                  </Show>
-                                </Show>
-                              </div>
+
+                                              <Show when={panel() === "diff"}>
+                                                <div class="diff-view">
+                                                  <For each={diffHunks()}>
+                                                    {(h) => (
+                                                      <div class={`diff-line ${h.tag}`}>
+                                                        {h.value}
+                                                      </div>
+                                                    )}
+                                                  </For>
+                                                </div>
+                                              </Show>
+
+                                              <Show when={panel() === "portforward"}>
+                                                <div class="pf-panel">
+                                                  <div class="pf-form">
+                                                    <label>
+                                                      Local
+                                                      <input
+                                                        type="number"
+                                                        value={localPort()}
+                                                        onInput={(e) =>
+                                                          setLocalPort(
+                                                            Number(e.currentTarget.value),
+                                                          )
+                                                        }
+                                                      />
+                                                    </label>
+                                                    <label>
+                                                      Remote
+                                                      <select
+                                                        value={String(remotePort())}
+                                                        onChange={(e) =>
+                                                          setRemotePort(
+                                                            Number(e.currentTarget.value),
+                                                          )
+                                                        }
+                                                      >
+                                                        <For each={selectedPodPorts()}>
+                                                          {(p) => (
+                                                            <option value={String(p.port)}>
+                                                              {formatPodPort(p)}
+                                                            </option>
+                                                          )}
+                                                        </For>
+                                                      </select>
+                                                    </label>
+                                                    <button class="btn" onClick={() => startPf()}>
+                                                      Start
+                                                    </button>
+                                                    <Show when={pf()}>
+                                                      {(info) => (
+                                                        <button
+                                                          class="btn danger"
+                                                          onClick={async () => {
+                                                            await api.stopPortForward(
+                                                              info().context,
+                                                              info().id,
+                                                            );
+                                                            setPf(null);
+                                                          }}
+                                                        >
+                                                          Stop :{info().localPort}
+                                                        </button>
+                                                      )}
+                                                    </Show>
+                                                  </div>
+                                                  <Show when={pf()}>
+                                                    {(info) => (
+                                                      <p>
+                                                        Forwarding{" "}
+                                                        <code>
+                                                          localhost:{info().localPort} →{" "}
+                                                          {info().pod}:{info().remotePort}
+                                                        </code>
+                                                      </p>
+                                                    )}
+                                                  </Show>
+                                                </div>
+                                              </Show>
+                                            </section>
+                                          </>
+                                        )}
+                                      </Show>
+                                    </Show>
+                                  </div>
+                                }
+                              >
+                                <HelmReleasesView
+                                  context={store.selectedContext()}
+                                  namespaces={
+                                    store.selectedNamespaces[store.selectedContext()] || ["default"]
+                                  }
+                                  onStatus={(message, isError) =>
+                                    showStatus(message, Boolean(isError), isError ? 10000 : 5000)
+                                  }
+                                />
+                              </Show>
                             }
                           >
                             <LonghornOverviewView
@@ -3204,6 +3561,31 @@ function App() {
                 <Show when={canDeleteKind(store.selectedKind().kind)}>
                   <button class="ctx-item danger" onClick={() => void deleteKeys(menu().keys)}>
                     Delete
+                  </button>
+                </Show>
+                <Show
+                  when={canFluxHelmReleaseAction(
+                    store.selectedKind().kind,
+                    store.selectedKind().apiVersion,
+                  )}
+                >
+                  <button
+                    class="ctx-item"
+                    onClick={() => void runFluxHelmReleaseAction("suspend", menu().keys)}
+                  >
+                    Suspend
+                  </button>
+                  <button
+                    class="ctx-item"
+                    onClick={() => void runFluxHelmReleaseAction("resume", menu().keys)}
+                  >
+                    Resume
+                  </button>
+                  <button
+                    class="ctx-item"
+                    onClick={() => void runFluxHelmReleaseAction("reconcile", menu().keys)}
+                  >
+                    Reconcile
                   </button>
                 </Show>
                 <Show when={menu().keys.length === 1 && canScaleKind(store.selectedKind().kind)}>

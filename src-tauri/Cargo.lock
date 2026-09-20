@@ -2776,7 +2776,9 @@ name = "kuby"
 version = "0.5.4"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
+ "flate2",
  "futures",
  "http 1.5.0",
  "json-patch 4.2.0",

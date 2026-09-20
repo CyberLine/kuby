@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tauri::{AppHandle, State};
 
-use crate::error::{kube_is_forbidden, KubyError, Result};
+use crate::error::{kube_is_forbidden, kube_is_not_found, KubyError, Result};
 use crate::k8s::discovery::DiscoveredResource;
 use crate::k8s::watch;
 use crate::AppState;
@@ -142,13 +142,13 @@ pub async fn get_resource_yaml(
     Ok(serde_yaml::to_string(&value)?)
 }
 
-#[tauri::command]
-pub async fn apply_yaml(
-    state: State<'_, AppState>,
-    context: String,
-    yaml: String,
-) -> Result<serde_json::Value> {
-    let obj = crate::k8s::ClusterManager::dynamic_from_yaml(&yaml)?;
+async fn apply_yaml_inner(
+    state: &AppState,
+    context: &str,
+    yaml: &str,
+    dry_run: bool,
+) -> Result<DynamicObject> {
+    let obj = crate::k8s::ClusterManager::dynamic_from_yaml(yaml)?;
     let types = obj
         .types
         .clone()
@@ -157,16 +157,42 @@ pub async fn apply_yaml(
     let name = obj.name_any();
     let (api, _) = state
         .manager
-        .resolve_api(&context, &types.api_version, &types.kind, ns.as_deref())
+        .resolve_api(context, &types.api_version, &types.kind, ns.as_deref())
         .await?;
 
-    // Server-side apply with create fallback
-    let params = PatchParams::apply("kuby").force();
-    let patched: DynamicObject = match api.patch(&name, &params, &Patch::Apply(&obj)).await {
-        Ok(obj) => obj,
-        Err(_) => api.create(&PostParams::default(), &obj).await?,
-    };
+    let mut patch_params = PatchParams::apply("kuby").force();
+    let mut post_params = PostParams::default();
+    if dry_run {
+        patch_params = patch_params.dry_run();
+        post_params.dry_run = true;
+    }
+
+    // Server-side apply with create fallback when the object does not exist yet.
+    match api.patch(&name, &patch_params, &Patch::Apply(&obj)).await {
+        Ok(obj) => Ok(obj),
+        Err(err) if kube_is_not_found(&err) => Ok(api.create(&post_params, &obj).await?),
+        Err(err) => Err(err.into()),
+    }
+}
+
+#[tauri::command]
+pub async fn apply_yaml(
+    state: State<'_, AppState>,
+    context: String,
+    yaml: String,
+) -> Result<serde_json::Value> {
+    let patched = apply_yaml_inner(&state, &context, &yaml, false).await?;
     Ok(serde_json::to_value(patched)?)
+}
+
+#[tauri::command]
+pub async fn validate_yaml(
+    state: State<'_, AppState>,
+    context: String,
+    yaml: String,
+) -> Result<serde_json::Value> {
+    let patched = apply_yaml_inner(&state, &context, &yaml, true).await?;
+    Ok(json!({ "ok": true, "name": patched.name_any() }))
 }
 
 /// Replace the `data` map on a ConfigMap or Secret via JSON Patch.

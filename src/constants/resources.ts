@@ -14,6 +14,21 @@ export const LONGHORN_OVERVIEW_NAV: CuratedNavItem = {
   label: "Overview",
 };
 
+/** Pseudo-kind for classic Helm 3 releases (Secrets type helm.sh/release.v1). */
+export const HELM_RELEASES_NAV: CuratedNavItem = {
+  kind: "Helm",
+  apiVersion: "kuby.io/helm",
+  group: "Helm",
+  label: "Releases",
+};
+
+/** Flux HelmRelease CR — only shown when helm.toolkit.fluxcd.io is discovered. */
+export const FLUX_HELM_RELEASE_NAV: CuratedNavItem = {
+  kind: "HelmRelease",
+  apiVersion: "helm.toolkit.fluxcd.io/v2",
+  group: "Helm",
+};
+
 export const CURATED_NAV: CuratedNavItem[] = [
   { kind: "Overview", apiVersion: "kuby.io/overview", group: "Workloads" },
   { kind: "Pod", apiVersion: "v1", group: "Workloads" },
@@ -37,6 +52,8 @@ export const CURATED_NAV: CuratedNavItem[] = [
   { kind: "PersistentVolumeClaim", apiVersion: "v1", group: "Storage" },
   { kind: "PersistentVolume", apiVersion: "v1", group: "Storage" },
   { kind: "StorageClass", apiVersion: "storage.k8s.io/v1", group: "Storage" },
+  HELM_RELEASES_NAV,
+  FLUX_HELM_RELEASE_NAV,
   { kind: "ServiceAccount", apiVersion: "v1", group: "Access" },
   { kind: "Role", apiVersion: "rbac.authorization.k8s.io/v1", group: "Access" },
   {
@@ -96,9 +113,41 @@ export function longhornApiVersion(
   return matches[0]?.apiVersion || null;
 }
 
+/** True when API discovery found any Flux helm.toolkit.fluxcd.io resource. */
+export function clusterHasFluxHelm(
+  discovered: { group?: string; apiVersion?: string }[] | undefined | null,
+): boolean {
+  if (!discovered?.length) return false;
+  return discovered.some(
+    (r) =>
+      r.group === "helm.toolkit.fluxcd.io" ||
+      (r.apiVersion || "").startsWith("helm.toolkit.fluxcd.io/"),
+  );
+}
+
+/** Prefer v2, then v2beta2 / v2beta1, else first discovered HelmRelease apiVersion. */
+export function fluxHelmReleaseApiVersion(
+  discovered: { group?: string; kind?: string; apiVersion?: string }[] | undefined | null,
+): string | null {
+  if (!discovered?.length) return null;
+  const matches = discovered.filter(
+    (r) =>
+      r.kind === "HelmRelease" &&
+      (r.group === "helm.toolkit.fluxcd.io" ||
+        (r.apiVersion || "").startsWith("helm.toolkit.fluxcd.io/")),
+  );
+  if (!matches.length) return null;
+  const prefer = ["v2", "v2beta2", "v2beta1"];
+  for (const ver of prefer) {
+    const hit = matches.find((r) => (r.apiVersion || "").endsWith(`/${ver}`));
+    if (hit?.apiVersion) return hit.apiVersion;
+  }
+  return matches[0]?.apiVersion || null;
+}
+
 /** Pseudo kinds that have no resource list / watch. */
 export function isPseudoKind(kind: string): boolean {
-  return kind === "Overview" || kind === "Longhorn";
+  return kind === "Overview" || kind === "Longhorn" || kind === "Helm";
 }
 
 /** Kinds watched for the namespace relationship graph (KubeView parity). */

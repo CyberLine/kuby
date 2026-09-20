@@ -1,9 +1,14 @@
 /** Kinds that support a simple Kubernetes DELETE. */
 export function canDeleteKind(kind: string): boolean {
-  if (!kind || kind === "Overview" || kind === "Longhorn") return false;
+  if (!kind || kind === "Overview" || kind === "Longhorn" || kind === "Helm") return false;
   // Binding-like cluster objects are deletable; Node delete is rarely what users want
   if (kind === "Node") return false;
   return true;
+}
+
+/** Flux HelmRelease supports suspend / resume / reconcile via patch. */
+export function canFluxHelmReleaseAction(kind: string, apiVersion?: string | null): boolean {
+  return kind === "HelmRelease" && (apiVersion || "").startsWith("helm.toolkit.fluxcd.io/");
 }
 
 export function canScaleKind(kind: string): boolean {

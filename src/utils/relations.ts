@@ -326,9 +326,7 @@ export function extractRelations(
       );
       if (gvk) {
         const parentNs =
-          typeof parent.namespace === "string" && parent.namespace
-            ? parent.namespace
-            : null;
+          typeof parent.namespace === "string" && parent.namespace ? parent.namespace : null;
         links.push({
           id: `ip-parent-${parent.resource}-${parent.name}`,
           group: "Parent",

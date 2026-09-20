@@ -234,6 +234,37 @@ export interface LonghornOverview {
   events: LonghornEvent[];
 }
 
+export interface HelmReleaseSummary {
+  name: string;
+  namespace: string;
+  revision: number;
+  status: string;
+  chart: string;
+  appVersion: string;
+  updated: string;
+}
+
+export interface HelmReleaseRevision {
+  revision: number;
+  status: string;
+  chart: string;
+  appVersion: string;
+  updated: string;
+  description: string;
+}
+
+export interface HelmReleaseDetail extends HelmReleaseSummary {
+  description: string;
+  valuesYaml: string;
+  history: HelmReleaseRevision[];
+}
+
+export interface HelmCliInfo {
+  available: boolean;
+  version?: string | null;
+  message?: string | null;
+}
+
 export interface DiffHunk {
   tag: "equal" | "delete" | "insert" | string;
   value: string;
