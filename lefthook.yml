@@ -12,7 +12,7 @@ pre-commit:
         - src-tauri/gen/**
         - src-tauri/target/**
       run: |
-        set -euo pipefail
+        set -eu
         export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
         root="$(git rev-parse --show-toplevel)"
         biome_bin="${root}/node_modules/.bin/biome"
@@ -29,7 +29,7 @@ pre-commit:
         - src-tauri/target/**
         - src-tauri/gen/**
       run: |
-        set -euo pipefail
+        set -eu
         export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
         if ! command -v rustfmt >/dev/null 2>&1; then
           echo "rustfmt not found; install with: rustup component add rustfmt"
@@ -40,7 +40,7 @@ pre-commit:
 
     - name: gitleaks
       run: |
-        set -euo pipefail
+        set -eu
         export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
         if command -v gitleaks >/dev/null 2>&1; then
           gitleaks protect --staged --redact --no-banner
@@ -55,7 +55,7 @@ pre-push:
   jobs:
     - name: biome-ci
       run: |
-        set -euo pipefail
+        set -eu
         export PATH="${HOME}/.cargo/bin:/opt/homebrew/bin:${HOME}/.local/bin:/usr/local/bin:${PATH}"
         root="$(git rev-parse --show-toplevel)"
         biome_bin="${root}/node_modules/.bin/biome"
