@@ -1476,6 +1476,64 @@ function App() {
     await reloadCurrentList();
   }
 
+  async function restartKeys(keys: string[]) {
+    setCtxMenu(null);
+    const kind = store.selectedKind().kind;
+    if (!canRestartKind(kind) || !keys.length) return;
+    const objs = objectsByKeys(keys);
+    if (!objs.length) return;
+
+    const sample = objs
+      .slice(0, 8)
+      .map((o) => {
+        const ns = objectNamespace(o);
+        return ns ? `${ns}/${objectName(o)}` : objectName(o);
+      })
+      .join("\n");
+    const more = objs.length > 8 ? `\n… and ${objs.length - 8} more` : "";
+
+    const ok = await confirmAction(
+      `Restart ${objs.length} ${kind}${objs.length === 1 ? "" : "s"}?\n\n${sample}${more}\n\nThis will trigger a rolling restart by updating the pod template.`,
+    );
+    if (!ok) return;
+
+    const ctx = store.selectedContext();
+    const apiVersion = store.selectedKind().apiVersion;
+    let okCount = 0;
+    const errors: string[] = [];
+    for (const obj of objs) {
+      const name = objectName(obj);
+      const ns = objectNamespace(obj);
+      try {
+        await api.resourceAction("restart", {
+          context: ctx,
+          apiVersion: (obj.apiVersion as string) || apiVersion,
+          kind: (obj.kind as string) || kind,
+          namespace: ns || null,
+          name,
+        });
+        okCount += 1;
+      } catch (e) {
+        errors.push(`${name}: ${String(e)}`);
+      }
+    }
+
+    const still = new Set(checkedKeys());
+    for (const obj of objs) still.delete(objectKey(obj));
+    setChecked(still);
+
+    if (errors.length) {
+      showStatus(
+        `Restarted ${okCount}/${objs.length}. ${errors.slice(0, 3).join(" · ")}`,
+        true,
+        10000,
+      );
+    } else {
+      showStatus(`Restarted ${okCount} ${kind}${okCount === 1 ? "" : "s"}`);
+    }
+    await reloadCurrentList();
+  }
+
   type NodeAction = "cordon" | "uncordon" | "drain";
 
   function selectionHasSchedulableNode(keys: string[]): boolean {
@@ -2421,6 +2479,14 @@ function App() {
                                         <div class="selection-bar">
                                           <span>{checkedKeys().size} selected</span>
                                           <div class="selection-bar-actions">
+                                            <Show when={canRestartKind(store.selectedKind().kind)}>
+                                              <button
+                                                class="btn"
+                                                onClick={() => void restartKeys([...checkedKeys()])}
+                                              >
+                                                Restart
+                                              </button>
+                                            </Show>
                                             <Show when={canDeleteKind(store.selectedKind().kind)}>
                                               <button
                                                 class="btn danger"
@@ -3556,6 +3622,11 @@ function App() {
                   </Show>
                   <button class="ctx-item" onClick={() => void runNodeAction("drain", menu().keys)}>
                     Drain
+                  </button>
+                </Show>
+                <Show when={canRestartKind(store.selectedKind().kind)}>
+                  <button class="ctx-item" onClick={() => void restartKeys(menu().keys)}>
+                    Restart
                   </button>
                 </Show>
                 <Show when={canDeleteKind(store.selectedKind().kind)}>
