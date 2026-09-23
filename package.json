@@ -45,7 +45,7 @@
     "@types/d3-force": "^3.0.10",
     "@types/node": "^26.5.1",
     "knip": "^6.35.1",
-    "lefthook": "^2.1.12",
+    "lefthook": "^2.1.14",
     "typescript": "~7.0.2",
     "vite": "^8.3.0",
     "vite-plugin-solid": "^2.11.12"
