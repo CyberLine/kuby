@@ -2632,6 +2632,86 @@ textarea.data-value.secret-blur:focus {
   overflow: hidden;
 }
 
+.row > .res-meter {
+  min-width: 0;
+}
+
+.res-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.res-meter {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  height: 100%;
+}
+
+.res-meter-track {
+  position: relative;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.res-meter-track > .usage-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+}
+
+.res-meter-track-empty,
+.usage-track-empty {
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.res-meter-inline {
+  position: relative;
+  z-index: 1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text);
+}
+
+.res-meter-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.res-meter-request {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-1px);
+  background: var(--text);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.pod-container-tile-usage {
+  grid-column: span 2;
+  min-width: 0;
+}
+
 .usage-fill {
   height: 100%;
 }
@@ -3639,6 +3719,11 @@ html[data-theme="light"] .about-overlay {
 .node-pods-table th,
 .node-pods-table td {
   white-space: nowrap;
+}
+
+.node-pods-table td.node-pod-metric {
+  white-space: normal;
+  min-width: 108px;
 }
 
 .node-pod-link {

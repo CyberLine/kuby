@@ -594,8 +594,8 @@ async fn collect_usage(
                     namespace: pm.namespace.clone(),
                     pod: pm.name.clone(),
                     container: c.name,
-                    cpu: format!("{used_cpu}m"),
-                    memory: format_bytes(used_mem),
+                    cpu: format_usage_pair(format_cpu(used_cpu), lim_cpu, format_cpu),
+                    memory: format_usage_pair(format_bytes(used_mem), lim_mem, format_bytes),
                     cpu_percent: (cpu_pct * 100.0).min(999.0),
                     memory_percent: (mem_pct * 100.0).min(999.0),
                 });
@@ -674,6 +674,29 @@ fn parse_memory_bytes(s: &str) -> i64 {
         }
     }
     s.parse::<i64>().unwrap_or(0)
+}
+
+fn format_cpu(millis: i64) -> String {
+    if millis >= 1000 {
+        let cores = millis as f64 / 1000.0;
+        if cores >= 10.0 {
+            return format!("{}", cores.round() as i64);
+        }
+        let mut s = format!("{cores:.2}");
+        while s.contains('.') && (s.ends_with('0') || s.ends_with('.')) {
+            s.pop();
+        }
+        return s;
+    }
+    format!("{millis}m")
+}
+
+fn format_usage_pair(used: String, limit: i64, format_limit: impl Fn(i64) -> String) -> String {
+    if limit > 0 {
+        format!("{used} / {}", format_limit(limit))
+    } else {
+        used
+    }
 }
 
 fn format_bytes(n: i64) -> String {

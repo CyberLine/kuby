@@ -44,6 +44,7 @@ import {
   supportsDataTab,
 } from "./components/ResourceDataEditor";
 import { ResourceIcon } from "./components/ResourceIcon";
+import { ResourceMeter } from "./components/ResourceUsageCell";
 import { SecretCertificateView } from "./components/SecretCertificateView";
 import { TelemetryDialog } from "./components/TelemetryDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
@@ -125,6 +126,7 @@ import {
   nodeStatusLabels,
   nodeStatusText,
 } from "./utils/nodeStatus";
+import { formatBytes, formatCpu } from "./utils/quantity";
 import { extractRelations, groupRelations, type RelationLink } from "./utils/relations";
 import {
   canRollbackReplicaSet,
@@ -135,6 +137,7 @@ import {
   replicaSetStatusRank,
   replicaSetStatusText,
 } from "./utils/replicaSetStatus";
+import { nodeResourceBudget, podResourceBudget } from "./utils/resourceBudget";
 import "./App.css";
 
 const OVERVIEW_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
@@ -1783,14 +1786,13 @@ function App() {
     return metrics().find((x) => x.name === name && x.namespace === ns) ?? null;
   }
 
-  function metricFor(obj: Record<string, unknown>): string {
-    const name = objectName(obj as never);
+  function resourceBudgetFor(obj: Record<string, unknown>) {
     if (isCoreNode(store.selectedKind().kind, store.selectedKind().apiVersion)) {
-      const m = nodeMetrics().find((x) => x.name === name);
-      return m ? `${m.cpu} / ${m.memory}` : "-";
+      const name = objectName(obj as never);
+      const m = nodeMetrics().find((x) => x.name === name) ?? null;
+      return nodeResourceBudget(obj, m);
     }
-    const m = podMetricsFor(obj);
-    return m ? `${m.cpu} / ${m.memory}` : "-";
+    return podResourceBudget(obj, podMetricsFor(obj));
   }
 
   function podsForNode(obj: Record<string, unknown>): string {
@@ -1886,11 +1888,11 @@ function App() {
             });
           }
           break;
-        case "metrics":
-          cmp = metricFor(a).localeCompare(metricFor(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
+        case "cpu":
+          cmp = (resourceBudgetFor(a).cpu.used ?? -1) - (resourceBudgetFor(b).cpu.used ?? -1);
+          break;
+        case "memory":
+          cmp = (resourceBudgetFor(a).memory.used ?? -1) - (resourceBudgetFor(b).memory.used ?? -1);
           break;
         case "version":
           cmp = nodeKubeletVersion(a).localeCompare(nodeKubeletVersion(b), undefined, {
@@ -2655,6 +2657,7 @@ function App() {
                                             const labels = statusLabelsFor(obj);
                                             const phaseTitle = labels.map((l) => l.text).join(", ");
                                             const expiry = expiryLabelFor(obj);
+                                            const budget = resourceBudgetFor(obj);
                                             return (
                                               <div
                                                 class={`row ${store.selectedObjectKey() === key ? "selected" : ""} ${
@@ -2747,8 +2750,19 @@ function App() {
                                                     {podsForNode(obj)}
                                                   </span>
                                                 </Show>
-                                                <Show when={colVisible("metrics")}>
-                                                  <span class="muted">{metricFor(obj)}</span>
+                                                <Show when={colVisible("cpu")}>
+                                                  <ResourceMeter
+                                                    heading="CPU"
+                                                    side={budget.cpu}
+                                                    format={formatCpu}
+                                                  />
+                                                </Show>
+                                                <Show when={colVisible("memory")}>
+                                                  <ResourceMeter
+                                                    heading="Memory"
+                                                    side={budget.memory}
+                                                    format={formatBytes}
+                                                  />
                                                 </Show>
                                                 <Show when={colVisible("expires")}>
                                                   <span class="status-labels" title={expiry.title}>

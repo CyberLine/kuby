@@ -314,12 +314,23 @@ function StatusCard(props: {
 function UsageBar(props: { value: string; percent: number }) {
   const pct = () => Math.min(100, Math.max(0, props.percent));
   const tone = () => (props.percent >= 95 ? "err" : props.percent >= 80 ? "warn" : "ok");
+  const hasLimit = () => props.value.includes(" / ");
+  const usedLabel = () => props.value.split(" / ")[0] ?? props.value;
   return (
-    <div class="usage-cell">
-      <span class="mono">{props.value}</span>
-      <div class="usage-track">
-        <div class={`usage-fill tone-${tone()}`} style={{ width: `${pct()}%` }} />
-      </div>
+    <div class="usage-cell" title={props.value}>
+      <Show
+        when={hasLimit()}
+        fallback={
+          <div class="usage-track usage-track-empty">
+            <span class="res-meter-inline mono">{props.value}</span>
+          </div>
+        }
+      >
+        <div class="usage-track res-meter-track">
+          <div class={`usage-fill tone-${tone()}`} style={{ width: `${pct()}%` }} />
+          <span class="res-meter-inline mono">{usedLabel()}</span>
+        </div>
+      </Show>
     </div>
   );
 }

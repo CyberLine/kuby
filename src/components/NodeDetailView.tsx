@@ -33,8 +33,10 @@ import {
   percentTone,
   usagePercent,
 } from "../utils/quantity";
+import { podResourceBudget } from "../utils/resourceBudget";
 import { MetricChart, type MetricSample } from "./MetricChart";
 import { ResourceIcon } from "./ResourceIcon";
+import { ResourceMeter } from "./ResourceUsageCell";
 
 const POLL_MS = 5000;
 
@@ -547,6 +549,8 @@ export function NodeDetailView(props: Props) {
                       const key = () => `${ns()}/${pname()}`;
                       const m = () => podMetricMap().get(key());
                       const phase = () => podPhaseLabel(pod as unknown as Record<string, unknown>);
+                      const budget = () =>
+                        podResourceBudget(pod as unknown as Record<string, unknown>, m() ?? null);
                       return (
                         <tr>
                           <td>
@@ -562,8 +566,16 @@ export function NodeDetailView(props: Props) {
                           <td>
                             <span class={`status-label ${phase().tone}`}>{phase().text}</span>
                           </td>
-                          <td class="mono">{m()?.cpu || "—"}</td>
-                          <td class="mono">{m()?.memory || "—"}</td>
+                          <td class="node-pod-metric">
+                            <ResourceMeter heading="CPU" side={budget().cpu} format={formatCpu} />
+                          </td>
+                          <td class="node-pod-metric">
+                            <ResourceMeter
+                              heading="Memory"
+                              side={budget().memory}
+                              format={formatBytes}
+                            />
+                          </td>
                           <td class="mono">
                             {podRestartCount(pod as unknown as Record<string, unknown>)}
                           </td>

@@ -7,6 +7,7 @@ import {
   podContainerGroups,
   readyLabel,
 } from "../utils/podContainers";
+import { ResourceUsageCell } from "./ResourceUsageCell";
 
 type Props = {
   pod: K8sObject;
@@ -33,13 +34,8 @@ function ContainerTile(props: { row: PodContainerRow }) {
           <dt>Restarts</dt>
           <dd class="mono">{props.row.restartCount == null ? "—" : props.row.restartCount}</dd>
         </div>
-        <div>
-          <dt>CPU</dt>
-          <dd class="mono">{props.row.cpu || "—"}</dd>
-        </div>
-        <div>
-          <dt>Mem</dt>
-          <dd class="mono">{props.row.memory || "—"}</dd>
+        <div class="pod-container-tile-usage">
+          <ResourceUsageCell budget={props.row.resources} />
         </div>
         <div class="pod-container-tile-wide">
           <dt>Image</dt>

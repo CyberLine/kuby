@@ -7,7 +7,8 @@ export type ListColumnId =
   | "version"
   | "status"
   | "pods"
-  | "metrics"
+  | "cpu"
+  | "memory"
   | "expires"
   | "age";
 
@@ -35,7 +36,8 @@ export const LIST_COLUMN_META: Record<ListColumnId, ListColumnMeta> = {
   version: { id: "version", label: "Version", defaultFr: 0.7, minPx: 60, hideable: true },
   status: { id: "status", label: "Status", defaultFr: 0.8, minPx: 70, hideable: true },
   pods: { id: "pods", label: "Pods", defaultFr: 0.6, minPx: 50, hideable: true },
-  metrics: { id: "metrics", label: "CPU / Mem", defaultFr: 1, minPx: 70, hideable: true },
+  cpu: { id: "cpu", label: "CPU", defaultFr: 0.7, minPx: 72, hideable: true },
+  memory: { id: "memory", label: "Mem", defaultFr: 0.7, minPx: 72, hideable: true },
   expires: { id: "expires", label: "Expires", defaultFr: 0.7, minPx: 64, hideable: true },
   age: { id: "age", label: "Age", defaultFr: 0.5, minPx: 40, hideable: true },
 };
@@ -64,6 +66,12 @@ function isColumnId(v: unknown): v is ListColumnId {
   return typeof v === "string" && (ALL_IDS as string[]).includes(v);
 }
 
+/** Older prefs stored one combined "metrics" column. */
+function expandStoredId(v: unknown): ListColumnId[] {
+  if (v === "metrics") return ["cpu", "memory"];
+  return isColumnId(v) ? [v] : [];
+}
+
 export function availableColumns(caps: KindColumnCaps): ListColumnId[] {
   const cols: ListColumnId[] = ["name"];
   if (caps.namespace) cols.push("namespace");
@@ -71,7 +79,10 @@ export function availableColumns(caps: KindColumnCaps): ListColumnId[] {
   if (caps.version) cols.push("version");
   if (caps.status) cols.push("status");
   if (caps.pods) cols.push("pods");
-  if (caps.metrics) cols.push("metrics");
+  if (caps.metrics) {
+    cols.push("cpu");
+    cols.push("memory");
+  }
   if (caps.expires) cols.push("expires");
   cols.push("age");
   return cols;
@@ -162,7 +173,7 @@ export function readColumnPrefs(): ColumnPrefs {
       const hiddenByKind: Record<string, ListColumnId[]> = {};
       for (const [kind, ids] of Object.entries(obj.hiddenByKind as Record<string, unknown>)) {
         if (!Array.isArray(ids)) continue;
-        hiddenByKind[kind] = ids.filter(isColumnId);
+        hiddenByKind[kind] = ids.flatMap(expandStoredId);
       }
       prefs.hiddenByKind = hiddenByKind;
     }

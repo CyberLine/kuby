@@ -1,4 +1,5 @@
 import type { StatusLabel, StatusTone } from "./nodeStatus";
+import { containerResourceBudget, type ResourceBudget } from "./resourceBudget";
 
 export type PodContainerKind = "init" | "app" | "ephemeral";
 
@@ -16,8 +17,7 @@ export type PodContainerRow = {
   image: string;
   ports: PodContainerPort[];
   state: StatusLabel;
-  cpu: string | null;
-  memory: string | null;
+  resources: ResourceBudget;
 };
 
 export type PodContainerGroup = {
@@ -203,8 +203,7 @@ function mergeGroup(
       image: statusImage || specImage || "—",
       ports: spec ? parsePorts(spec) : [],
       state: containerStateLabel(cs),
-      cpu: m?.cpu ?? null,
-      memory: m?.memory ?? null,
+      resources: containerResourceBudget(spec, m?.cpu ?? null, m?.memory ?? null),
     });
   };
 
