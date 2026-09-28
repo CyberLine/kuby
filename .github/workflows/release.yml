@@ -85,7 +85,9 @@ jobs:
         (github.event_name == 'workflow_dispatch' &&
           (inputs.platforms == 'linux-and-windows' || inputs.platforms == 'all'))
       )
-    runs-on: ubuntu-24.04
+    # Ubuntu 22.04 keeps glibc ≤ 2.35 so the AppImage runs on AppImageHub
+    # (22.04) and older distros; 24.04 would require GLIBC_2.39.
+    runs-on: ubuntu-22.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
@@ -133,6 +135,13 @@ jobs:
       - name: Sync Cargo.toml version
         run: pnpm sync-version
 
+      # Tauri caches AppRun as 0770; without world +x, AppRun.wrapped fails under
+      # firejail (AppImageHub). Seed ~/.cache/tauri before the bundler runs.
+      - name: Seed world-executable AppRun for AppImage
+        run: |
+          chmod +x .github/scripts/seed-tauri-apprun.sh
+          bash .github/scripts/seed-tauri-apprun.sh x86_64
+
       - name: Build Linux bundles
         uses: tauri-apps/tauri-action@v1
         env:
@@ -143,6 +152,26 @@ jobs:
           # Build only — omit releaseId/tagName so tauri-action does not touch
           # the GitHub Release. A flake on uploads.github.com must not discard the bundles.
           uploadUpdaterJson: false
+
+      - name: Verify AppRun.wrapped is world-executable
+        run: |
+          wrapped="$(find src-tauri/target/release/bundle/appimage -path '*.AppDir/AppRun.wrapped' -type f | head -1 || true)"
+          if [ -z "$wrapped" ]; then
+            echo "::error::AppRun.wrapped missing under appimage/*.AppDir (bundler layout changed?)"
+            find src-tauri/target/release/bundle/appimage -maxdepth 3 -print || true
+            exit 1
+          fi
+          mode="$(stat -c '%a' "$wrapped")"
+          case "$mode" in
+            *5 | *7)
+              echo "AppRun.wrapped mode ${mode} (world-executable): ${wrapped}"
+              ;;
+            *)
+              echo "::error::AppRun.wrapped is not world-executable (mode=${mode}); AppImageHub/firejail will get Permission denied"
+              ls -la "$wrapped"
+              exit 1
+              ;;
+          esac
 
       - name: Upload Linux workflow artifacts
         uses: actions/upload-artifact@v7

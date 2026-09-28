@@ -24,6 +24,8 @@ pnpm tauri build
 
 Artifacts land in `src-tauri/target/release/bundle/`.
 
+Release CI builds Linux on **Ubuntu 22.04** so the AppImage’s glibc requirement stays compatible with older hosts (and AppImageHub’s test runner). Before bundling, `.github/scripts/seed-tauri-apprun.sh` places a world-executable `AppRun` in Tauri’s tool cache — Tauri would otherwise ship `AppRun.wrapped` as `0770`, which fails under firejail with `Permission denied`.
+
 ## Windows packages
 
 `bundle.targets` includes `nsis` (setup `.exe`). Build on Windows (or CI) with:
