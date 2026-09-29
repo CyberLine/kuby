@@ -38,6 +38,9 @@
 			"icons/icon.icns",
 			"icons/icon.ico"
 		],
+		"resources": {
+			"metainfo/com.alexanderover.kuby.metainfo.xml": "usr/share/metainfo/com.alexanderover.kuby.metainfo.xml"
+		},
 		"macOS": {
 			"minimumSystemVersion": "11.0",
 			"hardenedRuntime": true,
