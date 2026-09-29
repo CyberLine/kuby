@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.alexanderover.kuby</id>
+  <name>Kuby</name>
+  <summary>Native multi-cluster Kubernetes desktop client</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>Kuby is a native multi-cluster Kubernetes desktop client built with Tauri 2, Rust (kube-rs), and SolidJS.</p>
+    <p>Key features include:</p>
+    <ul>
+      <li>Multi-cluster kubeconfig contexts with KUBECONFIG support</li>
+      <li>Live resource watches via kube_runtime::watcher</li>
+      <li>Generic API discovery and DynamicObject access including CRDs</li>
+      <li>Curated views for approximately 30 core resource kinds</li>
+      <li>Detail views, YAML apply, logs, exec, and port-forward capabilities</li>
+      <li>Aggregated logs with global search and multi-namespace selector</li>
+      <li>Side-by-side YAML diff and metrics.k8s.io CPU/RAM monitoring</li>
+      <li>Auth summaries for OIDC/kubelogin, EKS/GKE/AKS exec plugins, client certificates, and Teleport</li>
+      <li>Virtualized lists for large clusters</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">kuby.desktop</launchable>
+  <url type="homepage">https://github.com/CyberLine/kuby</url>
+  <url type="bugtracker">https://github.com/CyberLine/kuby/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Workload overview with cluster sidebar, status cards, warnings, restarts, and resource usage</caption>
+      <image>https://raw.githubusercontent.com/CyberLine/kuby/main/docs/images/overview.png</image>
+    </screenshot>
+  </screenshots>
+  <releases>
+    <release version="0.7.0" date="2026-09-29"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+  <developer id="com.alexanderover">
+    <name>Alexander Over</name>
+  </developer>
+  <categories>
+    <category>System</category>
+    <category>Network</category>
+    <category>Monitor</category>
+  </categories>
+  <keywords>
+    <keyword>kubernetes</keyword>
+    <keyword>k8s</keyword>
+    <keyword>cluster</keyword>
+    <keyword>devops</keyword>
+    <keyword>container</keyword>
+  </keywords>
+</component>
