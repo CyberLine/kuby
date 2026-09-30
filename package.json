@@ -30,7 +30,7 @@
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@sentry/solid": "^10.75.0",
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-dialog": "^2.8.0",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-updater": "^2",
     "@xterm/addon-fit": "^0.11.0",
