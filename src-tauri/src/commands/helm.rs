@@ -67,6 +67,7 @@ pub async fn flux_helm_release_set_suspend(
         &state.manager,
         &context,
         &api_version,
+        "HelmRelease",
         &namespace,
         &name,
         suspend,
@@ -82,5 +83,55 @@ pub async fn flux_helm_release_reconcile(
     namespace: String,
     name: String,
 ) -> Result<()> {
-    helm::request_flux_reconcile(&state.manager, &context, &api_version, &namespace, &name).await
+    helm::request_flux_reconcile(
+        &state.manager,
+        &context,
+        &api_version,
+        "HelmRelease",
+        &namespace,
+        &name,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn flux_set_suspend(
+    state: State<'_, AppState>,
+    context: String,
+    api_version: String,
+    kind: String,
+    namespace: String,
+    name: String,
+    suspend: bool,
+) -> Result<()> {
+    helm::set_flux_suspend(
+        &state.manager,
+        &context,
+        &api_version,
+        &kind,
+        &namespace,
+        &name,
+        suspend,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn flux_reconcile(
+    state: State<'_, AppState>,
+    context: String,
+    api_version: String,
+    kind: String,
+    namespace: String,
+    name: String,
+) -> Result<()> {
+    helm::request_flux_reconcile(
+        &state.manager,
+        &context,
+        &api_version,
+        &kind,
+        &namespace,
+        &name,
+    )
+    .await
 }

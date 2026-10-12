@@ -15,6 +15,8 @@ export type PodContainerRow = {
   ready: boolean | null;
   restartCount: number | null;
   image: string;
+  /** Kubernetes containerStatuses[].imageID when present. */
+  imageId: string | null;
   ports: PodContainerPort[];
   state: StatusLabel;
   resources: ResourceBudget;
@@ -194,6 +196,7 @@ function mergeGroup(
     const ready = typeof cs?.ready === "boolean" ? cs.ready : cs ? Boolean(cs.ready) : null;
     const statusImage = typeof cs?.image === "string" ? cs.image : "";
     const specImage = typeof spec?.image === "string" ? spec.image : "";
+    const imageId = typeof cs?.imageID === "string" && cs.imageID ? cs.imageID : null;
     const m = metricsByName.get(name);
     rows.push({
       name,
@@ -201,6 +204,7 @@ function mergeGroup(
       ready,
       restartCount,
       image: statusImage || specImage || "—",
+      imageId,
       ports: spec ? parsePorts(spec) : [],
       state: containerStateLabel(cs),
       resources: containerResourceBudget(spec, m?.cpu ?? null, m?.memory ?? null),

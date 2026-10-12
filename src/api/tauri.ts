@@ -17,6 +17,9 @@ import type {
   PortForwardInfo,
   ResourceIdentifier,
   RollbackResult,
+  RouteFlowGraph,
+  TrivyCliInfo,
+  TrivyScanResult,
   WorkloadOverview,
 } from "../types";
 
@@ -195,6 +198,49 @@ export const api = {
     namespace: string;
     name: string;
   }) => invoke<void>("flux_helm_release_reconcile", args),
+  fluxSetSuspend: (args: {
+    context: string;
+    apiVersion: string;
+    kind: string;
+    namespace: string;
+    name: string;
+    suspend: boolean;
+  }) => invoke<void>("flux_set_suspend", args),
+  fluxReconcile: (args: {
+    context: string;
+    apiVersion: string;
+    kind: string;
+    namespace: string;
+    name: string;
+  }) => invoke<void>("flux_reconcile", args),
+  argoAppRefresh: (args: {
+    context: string;
+    apiVersion: string;
+    namespace: string;
+    name: string;
+  }) => invoke<void>("argo_app_refresh", args),
+  argoAppSync: (args: { context: string; apiVersion: string; namespace: string; name: string }) =>
+    invoke<void>("argo_app_sync", args),
+  getRouteFlow: (args: {
+    context: string;
+    apiVersion: string;
+    kind: string;
+    namespace?: string | null;
+    name: string;
+  }) =>
+    invoke<RouteFlowGraph>("get_route_flow", {
+      context: args.context,
+      apiVersion: args.apiVersion,
+      kind: args.kind,
+      namespace: args.namespace ?? null,
+      name: args.name,
+    }),
+  trivyCliAvailable: () => invoke<TrivyCliInfo>("trivy_cli_available"),
+  trivyScanImage: (image: string, imageId?: string | null) =>
+    invoke<TrivyScanResult>("trivy_scan_image", {
+      image,
+      imageId: imageId ?? null,
+    }),
   diffResources: (leftYaml: string, rightYaml: string) =>
     invoke<{ hunks: DiffHunk[] }>("diff_resources", { leftYaml, rightYaml }),
   setTelemetryEnabled: (enabled: boolean) => invoke<void>("set_telemetry_enabled", { enabled }),

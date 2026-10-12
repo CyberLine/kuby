@@ -209,6 +209,13 @@ pub fn run() {
             commands::helm::helm_upgrade,
             commands::helm::flux_helm_release_set_suspend,
             commands::helm::flux_helm_release_reconcile,
+            commands::helm::flux_set_suspend,
+            commands::helm::flux_reconcile,
+            commands::argo::argo_app_refresh,
+            commands::argo::argo_app_sync,
+            commands::route_flow::get_route_flow,
+            commands::trivy::trivy_cli_available,
+            commands::trivy::trivy_scan_image,
             commands::telemetry::set_telemetry_enabled,
         ])
         .run(tauri::generate_context!())

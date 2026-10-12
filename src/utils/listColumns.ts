@@ -6,6 +6,7 @@ export type ListColumnId =
   | "node"
   | "version"
   | "status"
+  | "summary"
   | "pods"
   | "cpu"
   | "memory"
@@ -35,6 +36,7 @@ export const LIST_COLUMN_META: Record<ListColumnId, ListColumnMeta> = {
   },
   version: { id: "version", label: "Version", defaultFr: 0.7, minPx: 60, hideable: true },
   status: { id: "status", label: "Status", defaultFr: 0.8, minPx: 70, hideable: true },
+  summary: { id: "summary", label: "Summary", defaultFr: 1.4, minPx: 90, hideable: true },
   pods: { id: "pods", label: "Pods", defaultFr: 0.6, minPx: 50, hideable: true },
   cpu: { id: "cpu", label: "CPU", defaultFr: 0.7, minPx: 72, hideable: true },
   memory: { id: "memory", label: "Mem", defaultFr: 0.7, minPx: 72, hideable: true },
@@ -47,6 +49,7 @@ export type KindColumnCaps = {
   node: boolean;
   version: boolean;
   status: boolean;
+  summary: boolean;
   pods: boolean;
   metrics: boolean;
   expires: boolean;
@@ -78,6 +81,7 @@ export function availableColumns(caps: KindColumnCaps): ListColumnId[] {
   if (caps.node) cols.push("node");
   if (caps.version) cols.push("version");
   if (caps.status) cols.push("status");
+  if (caps.summary) cols.push("summary");
   if (caps.pods) cols.push("pods");
   if (caps.metrics) {
     cols.push("cpu");

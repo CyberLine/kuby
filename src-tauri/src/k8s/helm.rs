@@ -266,17 +266,18 @@ pub fn upgrade(
     run_helm(&args)
 }
 
-/// Patch Flux HelmRelease `spec.suspend`.
+/// Patch Flux resource `spec.suspend` (HelmRelease, Kustomization, sources, …).
 pub async fn set_flux_suspend(
     manager: &ClusterManager,
     context: &str,
     api_version: &str,
+    kind: &str,
     namespace: &str,
     name: &str,
     suspend: bool,
 ) -> Result<()> {
     let (api, _) = manager
-        .resolve_api(context, api_version, "HelmRelease", Some(namespace))
+        .resolve_api(context, api_version, kind, Some(namespace))
         .await?;
     let patch = json!({ "spec": { "suspend": suspend } });
     api.patch(name, &PatchParams::default(), &Patch::Merge(&patch))
@@ -289,11 +290,12 @@ pub async fn request_flux_reconcile(
     manager: &ClusterManager,
     context: &str,
     api_version: &str,
+    kind: &str,
     namespace: &str,
     name: &str,
 ) -> Result<()> {
     let (api, _) = manager
-        .resolve_api(context, api_version, "HelmRelease", Some(namespace))
+        .resolve_api(context, api_version, kind, Some(namespace))
         .await?;
     let now = chrono::Utc::now().to_rfc3339();
     let patch = json!({

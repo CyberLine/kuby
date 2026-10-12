@@ -21,6 +21,7 @@ import logo from "./assets/logo.png";
 import { AboutDialog } from "./components/AboutDialog";
 import { CodeEditor } from "./components/CodeEditor";
 import { ContextPicker } from "./components/ContextPicker";
+import { CrdDetailPanel } from "./components/crd/CrdDetailPanel";
 import { ExecTerminal } from "./components/ExecTerminal";
 import { HelmReleasesView } from "./components/HelmReleasesView";
 import { LoadingSpinner } from "./components/LoadingSpinner";
@@ -50,8 +51,12 @@ import { TelemetryDialog } from "./components/TelemetryDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { VirtualList } from "./components/VirtualList";
 import {
+  canArgoRefresh,
+  canArgoSync,
   canDeleteKind,
+  canFluxAction,
   canFluxHelmReleaseAction,
+  canFluxSuspend,
   canNodeAction,
   canRestartKind,
   canRollbackDeployment,
@@ -138,6 +143,16 @@ import {
   replicaSetStatusText,
 } from "./utils/replicaSetStatus";
 import { nodeResourceBudget, podResourceBudget } from "./utils/resourceBudget";
+import { isFluxSuspended } from "./views/families/flux";
+import {
+  curatedCrdNavItems,
+  findKindView,
+  kindViewHasExpiresColumn,
+  kindViewHasStatusColumn,
+  kindViewHasSummaryColumn,
+  kindViewListSummary,
+  kindViewStatusLabels,
+} from "./views/registry";
 import "./App.css";
 
 const OVERVIEW_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
@@ -995,7 +1010,7 @@ function App() {
       const hasLonghorn = clusterHasLonghorn(discovered);
       const hasFluxHelm = clusterHasFluxHelm(discovered);
       const fluxAv = fluxHelmReleaseApiVersion(discovered);
-      return CURATED_NAV.filter((item) => {
+      const curated = CURATED_NAV.filter((item) => {
         if (item.kind === "Longhorn") return hasLonghorn;
         if (item.kind === "HelmRelease") return hasFluxHelm;
         return true;
@@ -1005,6 +1020,16 @@ function App() {
         }
         return item;
       });
+      const crdNav = curatedCrdNavItems(discovered).map((item) => ({
+        kind: item.kind,
+        apiVersion: item.apiVersion,
+        group: item.group,
+        label: item.label,
+      }));
+      // Avoid duplicating Flux HelmRelease already in CURATED_NAV.
+      const seen = new Set(curated.map((i) => `${i.apiVersion}/${i.kind}`));
+      const extra = crdNav.filter((i) => !seen.has(`${i.apiVersion}/${i.kind}`));
+      return [...curated, ...extra];
     }
     const ctx = store.selectedContext();
     const discovered = store.apiResources[ctx] || [];
@@ -1230,8 +1255,7 @@ function App() {
   }
 
   function isFluxHelmReleaseSuspended(obj: K8sObject): boolean {
-    const spec = obj.spec as { suspend?: boolean } | undefined;
-    return Boolean(spec?.suspend);
+    return isFluxSuspended(obj);
   }
 
   async function runFluxHelmReleaseAction(
@@ -1240,7 +1264,13 @@ function App() {
   ) {
     setCtxMenu(null);
     const kind = store.selectedKind();
-    if (!canFluxHelmReleaseAction(kind.kind, kind.apiVersion) || !keys.length) return;
+    const canAct =
+      action === "reconcile"
+        ? canFluxAction(kind.kind, kind.apiVersion) ||
+          canFluxHelmReleaseAction(kind.kind, kind.apiVersion)
+        : canFluxSuspend(kind.kind, kind.apiVersion) ||
+          canFluxHelmReleaseAction(kind.kind, kind.apiVersion);
+    if (!canAct || !keys.length) return;
     const objs = objectsByKeys(keys);
     if (!objs.length) return;
 
@@ -1253,9 +1283,9 @@ function App() {
     if (!targets.length) {
       showStatus(
         action === "suspend"
-          ? "All selected HelmReleases are already suspended"
+          ? `All selected ${kind.kind}s are already suspended`
           : action === "resume"
-            ? "No selected HelmReleases are suspended"
+            ? `No selected ${kind.kind}s are suspended`
             : "Nothing to reconcile",
       );
       return;
@@ -1263,7 +1293,7 @@ function App() {
 
     if (action === "suspend" || action === "resume") {
       const ok = await confirmAction(
-        `${action === "suspend" ? "Suspend" : "Resume"} ${targets.length} HelmRelease${
+        `${action === "suspend" ? "Suspend" : "Resume"} ${targets.length} ${kind.kind}${
           targets.length === 1 ? "" : "s"
         }?`,
       );
@@ -1277,18 +1307,21 @@ function App() {
       const name = objectName(obj);
       const ns = objectNamespace(obj);
       const apiVersion = (obj.apiVersion as string) || kind.apiVersion;
+      const objKind = (obj.kind as string) || kind.kind;
       try {
         if (action === "reconcile") {
-          await api.fluxHelmReleaseReconcile({
+          await api.fluxReconcile({
             context: ctx,
             apiVersion,
+            kind: objKind,
             namespace: ns,
             name,
           });
         } else {
-          await api.fluxHelmReleaseSetSuspend({
+          await api.fluxSetSuspend({
             context: ctx,
             apiVersion,
+            kind: objKind,
             namespace: ns,
             name,
             suspend: action === "suspend",
@@ -1309,10 +1342,60 @@ function App() {
     } else {
       showStatus(
         action === "reconcile"
-          ? `Reconcile requested for ${okCount} HelmRelease${okCount === 1 ? "" : "s"}`
-          : `${action === "suspend" ? "Suspended" : "Resumed"} ${okCount} HelmRelease${
+          ? `Reconcile requested for ${okCount} ${kind.kind}${okCount === 1 ? "" : "s"}`
+          : `${action === "suspend" ? "Suspended" : "Resumed"} ${okCount} ${kind.kind}${
               okCount === 1 ? "" : "s"
             }`,
+      );
+    }
+    await reloadCurrentList();
+  }
+
+  async function runArgoAction(action: "refresh" | "sync", keys: string[]) {
+    setCtxMenu(null);
+    const kind = store.selectedKind();
+    if (action === "refresh" && !canArgoRefresh(kind.kind, kind.apiVersion)) return;
+    if (action === "sync" && !canArgoSync(kind.kind, kind.apiVersion)) return;
+    if (!keys.length) return;
+    const objs = objectsByKeys(keys);
+    if (!objs.length) return;
+
+    if (action === "sync") {
+      const ok = await confirmAction(
+        `Sync ${objs.length} Application${objs.length === 1 ? "" : "s"}? This updates the cluster.`,
+      );
+      if (!ok) return;
+    }
+
+    const ctx = store.selectedContext();
+    let okCount = 0;
+    const errors: string[] = [];
+    for (const obj of objs) {
+      const name = objectName(obj);
+      const ns = objectNamespace(obj);
+      const apiVersion = (obj.apiVersion as string) || kind.apiVersion;
+      try {
+        if (action === "refresh") {
+          await api.argoAppRefresh({ context: ctx, apiVersion, namespace: ns, name });
+        } else {
+          await api.argoAppSync({ context: ctx, apiVersion, namespace: ns, name });
+        }
+        okCount += 1;
+      } catch (e) {
+        errors.push(`${name}: ${String(e)}`);
+      }
+    }
+    if (errors.length) {
+      showStatus(
+        `${action} ${okCount}/${objs.length}. ${errors.slice(0, 3).join(" · ")}`,
+        true,
+        10000,
+      );
+    } else {
+      showStatus(
+        action === "refresh"
+          ? `Refresh requested for ${okCount} Application${okCount === 1 ? "" : "s"}`
+          : `Sync started for ${okCount} Application${okCount === 1 ? "" : "s"}`,
       );
     }
     await reloadCurrentList();
@@ -1687,6 +1770,8 @@ function App() {
       ?.deletionTimestamp;
     if (deletionTimestamp) return "Terminating";
     const sel = store.selectedKind();
+    const crdLabels = kindViewStatusLabels(obj as K8sObject, sel.kind, sel.apiVersion);
+    if (crdLabels?.length) return crdLabels.map((l) => l.text).join(", ");
     if (isCoreNode(sel.kind, sel.apiVersion)) {
       return nodeStatusText(obj);
     }
@@ -1731,6 +1816,8 @@ function App() {
       return [{ text: "Terminating", tone: "warn" as const }];
     }
     const sel = store.selectedKind();
+    const crdLabels = kindViewStatusLabels(obj as K8sObject, sel.kind, sel.apiVersion);
+    if (crdLabels?.length) return crdLabels;
     if (isCoreNode(sel.kind, sel.apiVersion)) {
       return nodeStatusLabels(obj);
     }
@@ -1888,6 +1975,13 @@ function App() {
             });
           }
           break;
+        case "summary": {
+          const sel = store.selectedKind();
+          const sa = kindViewListSummary(a as K8sObject, sel.kind, sel.apiVersion) || "";
+          const sb = kindViewListSummary(b as K8sObject, sel.kind, sel.apiVersion) || "";
+          cmp = sa.localeCompare(sb, undefined, { sensitivity: "base", numeric: true });
+          break;
+        }
         case "cpu":
           cmp = (resourceBudgetFor(a).cpu.used ?? -1) - (resourceBudgetFor(b).cpu.used ?? -1);
           break;
@@ -1949,10 +2043,15 @@ function App() {
       namespace: discovered ? discovered.namespaced : kindHasNamespaceColumn(kind.kind),
       node: kindHasNodeColumn(kind.kind),
       version: coreNode,
-      status: kindHasStatusColumn(kind.kind, kind.apiVersion),
+      status:
+        kindHasStatusColumn(kind.kind, kind.apiVersion) ||
+        kindViewHasStatusColumn(kind.kind, kind.apiVersion),
+      summary: kindViewHasSummaryColumn(kind.kind, kind.apiVersion),
       pods: coreNode,
       metrics: kind.kind === "Pod" || coreNode,
-      expires: kindHasExpiresColumn(kind.kind, kind.apiVersion),
+      expires:
+        kindHasExpiresColumn(kind.kind, kind.apiVersion) ||
+        kindViewHasExpiresColumn(kind.kind, kind.apiVersion),
     };
   });
 
@@ -2541,10 +2640,16 @@ function App() {
                                               </button>
                                             </Show>
                                             <Show
-                                              when={canFluxHelmReleaseAction(
-                                                store.selectedKind().kind,
-                                                store.selectedKind().apiVersion,
-                                              )}
+                                              when={
+                                                canFluxSuspend(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                ) ||
+                                                canFluxHelmReleaseAction(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                )
+                                              }
                                             >
                                               <button
                                                 class="btn"
@@ -2566,6 +2671,19 @@ function App() {
                                               >
                                                 Resume
                                               </button>
+                                            </Show>
+                                            <Show
+                                              when={
+                                                canFluxAction(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                ) ||
+                                                canFluxHelmReleaseAction(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                )
+                                              }
+                                            >
                                               <button
                                                 class="btn"
                                                 onClick={() =>
@@ -2575,6 +2693,29 @@ function App() {
                                                 }
                                               >
                                                 Reconcile
+                                              </button>
+                                            </Show>
+                                            <Show
+                                              when={canArgoRefresh(
+                                                store.selectedKind().kind,
+                                                store.selectedKind().apiVersion,
+                                              )}
+                                            >
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runArgoAction("refresh", [...checkedKeys()])
+                                                }
+                                              >
+                                                Refresh
+                                              </button>
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runArgoAction("sync", [...checkedKeys()])
+                                                }
+                                              >
+                                                Sync
                                               </button>
                                             </Show>
                                             <button
@@ -2740,6 +2881,24 @@ function App() {
                                                         </span>
                                                       )}
                                                     </For>
+                                                  </span>
+                                                </Show>
+                                                <Show when={colVisible("summary")}>
+                                                  <span
+                                                    class="muted"
+                                                    title={
+                                                      kindViewListSummary(
+                                                        obj as K8sObject,
+                                                        store.selectedKind().kind,
+                                                        store.selectedKind().apiVersion,
+                                                      ) || ""
+                                                    }
+                                                  >
+                                                    {kindViewListSummary(
+                                                      obj as K8sObject,
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    ) || "—"}
                                                   </span>
                                                 </Show>
                                                 <Show when={colVisible("pods")}>
@@ -2912,10 +3071,16 @@ function App() {
                                                   </button>
                                                 </Show>
                                                 <Show
-                                                  when={canFluxHelmReleaseAction(
-                                                    store.selectedKind().kind,
-                                                    store.selectedKind().apiVersion,
-                                                  )}
+                                                  when={
+                                                    canFluxSuspend(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    ) ||
+                                                    canFluxHelmReleaseAction(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    )
+                                                  }
                                                 >
                                                   <Show when={!isFluxHelmReleaseSuspended(obj())}>
                                                     <button
@@ -2941,6 +3106,19 @@ function App() {
                                                       Resume
                                                     </button>
                                                   </Show>
+                                                </Show>
+                                                <Show
+                                                  when={
+                                                    canFluxAction(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    ) ||
+                                                    canFluxHelmReleaseAction(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    )
+                                                  }
+                                                >
                                                   <button
                                                     class="btn"
                                                     onClick={() =>
@@ -2950,6 +3128,31 @@ function App() {
                                                     }
                                                   >
                                                     Reconcile
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={canArgoRefresh(
+                                                    store.selectedKind().kind,
+                                                    store.selectedKind().apiVersion,
+                                                  )}
+                                                >
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() =>
+                                                      void runArgoAction("refresh", [
+                                                        objectKey(obj()),
+                                                      ])
+                                                    }
+                                                  >
+                                                    Refresh
+                                                  </button>
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() =>
+                                                      void runArgoAction("sync", [objectKey(obj())])
+                                                    }
+                                                  >
+                                                    Sync
                                                   </button>
                                                 </Show>
                                                 <Show
@@ -3076,6 +3279,28 @@ function App() {
                                                       metrics={podMetricsFor(
                                                         obj() as unknown as Record<string, unknown>,
                                                       )}
+                                                    />
+                                                  </Show>
+                                                  <Show
+                                                    when={Boolean(
+                                                      findKindView(
+                                                        store.selectedKind().kind,
+                                                        store.selectedKind().apiVersion,
+                                                      ),
+                                                    )}
+                                                  >
+                                                    <CrdDetailPanel
+                                                      context={store.selectedContext()}
+                                                      apiVersion={store.selectedKind().apiVersion}
+                                                      kind={store.selectedKind().kind}
+                                                      obj={obj()}
+                                                      discovered={
+                                                        store.apiResources[
+                                                          store.selectedContext()
+                                                        ] || []
+                                                      }
+                                                      allObjects={[]}
+                                                      openRelation={openRelation}
                                                     />
                                                   </Show>
                                                   <dl class="kv">
@@ -3649,10 +3874,13 @@ function App() {
                   </button>
                 </Show>
                 <Show
-                  when={canFluxHelmReleaseAction(
-                    store.selectedKind().kind,
-                    store.selectedKind().apiVersion,
-                  )}
+                  when={
+                    canFluxSuspend(store.selectedKind().kind, store.selectedKind().apiVersion) ||
+                    canFluxHelmReleaseAction(
+                      store.selectedKind().kind,
+                      store.selectedKind().apiVersion,
+                    )
+                  }
                 >
                   <button
                     class="ctx-item"
@@ -3666,11 +3894,34 @@ function App() {
                   >
                     Resume
                   </button>
+                </Show>
+                <Show
+                  when={
+                    canFluxAction(store.selectedKind().kind, store.selectedKind().apiVersion) ||
+                    canFluxHelmReleaseAction(
+                      store.selectedKind().kind,
+                      store.selectedKind().apiVersion,
+                    )
+                  }
+                >
                   <button
                     class="ctx-item"
                     onClick={() => void runFluxHelmReleaseAction("reconcile", menu().keys)}
                   >
                     Reconcile
+                  </button>
+                </Show>
+                <Show
+                  when={canArgoRefresh(store.selectedKind().kind, store.selectedKind().apiVersion)}
+                >
+                  <button
+                    class="ctx-item"
+                    onClick={() => void runArgoAction("refresh", menu().keys)}
+                  >
+                    Refresh
+                  </button>
+                  <button class="ctx-item" onClick={() => void runArgoAction("sync", menu().keys)}>
+                    Sync
                   </button>
                 </Show>
                 <Show when={menu().keys.length === 1 && canScaleKind(store.selectedKind().kind)}>

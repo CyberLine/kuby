@@ -265,6 +265,40 @@ export interface HelmCliInfo {
   message?: string | null;
 }
 
+export interface TrivyCliInfo {
+  available: boolean;
+  version?: string | null;
+  message?: string | null;
+}
+
+export interface TrivySeverityCounts {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  unknown: number;
+  total: number;
+}
+
+export interface TrivyVulnerability {
+  id: string;
+  severity: string;
+  pkgName: string;
+  installedVersion: string;
+  fixedVersion: string;
+  title: string;
+  primaryUrl?: string | null;
+  target: string;
+}
+
+export interface TrivyScanResult {
+  image: string;
+  scannedImage: string;
+  counts: TrivySeverityCounts;
+  vulnerabilities: TrivyVulnerability[];
+  truncated: boolean;
+}
+
 export interface DiffHunk {
   tag: "equal" | "delete" | "insert" | string;
   value: string;
@@ -280,3 +314,26 @@ export interface PortForwardInfo {
 }
 
 export type PanelTab = "detail" | "data" | "yaml" | "logs" | "exec" | "diff" | "portforward";
+
+export interface RouteFlowNode {
+  id: string;
+  kind: string;
+  apiVersion: string;
+  name: string;
+  namespace?: string | null;
+  label?: string;
+  detail?: string;
+  status?: "ok" | "err" | "idle" | "warn" | string;
+}
+
+export interface RouteFlowEdge {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface RouteFlowGraph {
+  nodes: RouteFlowNode[];
+  edges: RouteFlowEdge[];
+  notes?: string[];
+}

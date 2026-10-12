@@ -1,3 +1,6 @@
+import { canArgoRefreshAction, canArgoSyncAction } from "../views/families/argo";
+import { canFluxReconcileAction, canFluxSuspendAction } from "../views/families/flux";
+
 /** Kinds that support a simple Kubernetes DELETE. */
 export function canDeleteKind(kind: string): boolean {
   if (!kind || kind === "Overview" || kind === "Longhorn" || kind === "Helm") return false;
@@ -9,6 +12,23 @@ export function canDeleteKind(kind: string): boolean {
 /** Flux HelmRelease supports suspend / resume / reconcile via patch. */
 export function canFluxHelmReleaseAction(kind: string, apiVersion?: string | null): boolean {
   return kind === "HelmRelease" && (apiVersion || "").startsWith("helm.toolkit.fluxcd.io/");
+}
+
+/** Any Flux resource that supports reconcile annotation. */
+export function canFluxAction(kind: string, apiVersion?: string | null): boolean {
+  return canFluxReconcileAction(kind, apiVersion);
+}
+
+export function canFluxSuspend(kind: string, apiVersion?: string | null): boolean {
+  return canFluxSuspendAction(kind, apiVersion);
+}
+
+export function canArgoRefresh(kind: string, apiVersion?: string | null): boolean {
+  return canArgoRefreshAction(kind, apiVersion);
+}
+
+export function canArgoSync(kind: string, apiVersion?: string | null): boolean {
+  return canArgoSyncAction(kind, apiVersion);
 }
 
 export function canScaleKind(kind: string): boolean {

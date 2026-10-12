@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod argo;
 pub mod cluster;
 pub mod diff;
 pub mod exec_cmd;
@@ -10,4 +11,6 @@ pub mod nodes;
 pub mod overview;
 pub mod portforward_cmd;
 pub mod resources;
+pub mod route_flow;
 pub mod telemetry;
+pub mod trivy;
