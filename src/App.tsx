@@ -97,6 +97,7 @@ import type {
   PanelTab,
   PodMetrics,
   PortForwardInfo,
+  PrinterColumn,
 } from "./types";
 import {
   certificateExpiryFromObject,
@@ -104,16 +105,23 @@ import {
   formatCertDate,
   formatExpiryListLabel,
 } from "./utils/certificates";
+import { evalJsonPathCell } from "./utils/jsonPath";
 import {
   availableColumns,
   buildGridTemplate,
+  type ColumnId,
   type ColumnPrefs,
-  LIST_COLUMN_META,
+  isPrinterColumnId,
   type ListColumnId,
+  metaForColumn,
   persistColumnPrefs,
   podNodeName,
+  printerColumnId,
+  printerColumnsById,
+  printerColumnsNeedTable,
   readColumnPrefs,
   setColumnWidth,
+  shouldSkipPrinterColumn,
   toggleColumnHidden,
   visibleColumns,
 } from "./utils/listColumns";
@@ -131,6 +139,11 @@ import {
   nodeStatusLabels,
   nodeStatusText,
 } from "./utils/nodeStatus";
+import {
+  classifyPrinterColumnId,
+  registryUrlForImage,
+  statusToneFromText,
+} from "./utils/printerColumnRender";
 import { formatBytes, formatCpu } from "./utils/quantity";
 import { extractRelations, groupRelations, type RelationLink } from "./utils/relations";
 import {
@@ -288,11 +301,15 @@ function App() {
     y: number;
     keys: string[];
   } | null>(null);
-  const [sortKey, setSortKey] = createSignal<ListColumnId>("name");
+  const [sortKey, setSortKey] = createSignal<ColumnId>("name");
   const [sortDir, setSortDir] = createSignal<"asc" | "desc">("asc");
   const [detailWidth, setDetailWidth] = createSignal<number | null>(readDetailWidth());
   const [columnPrefs, setColumnPrefs] = createSignal<ColumnPrefs>(readColumnPrefs());
   const [columnsMenuOpen, setColumnsMenuOpen] = createSignal(false);
+  /** Auto columns for non-curated kinds (CRD printer columns / Table defs). */
+  const [printerColumns, setPrinterColumns] = createSignal<PrinterColumn[]>([]);
+  /** Table cell overlay keyed by objectKey → columnId → text (built-ins without jsonPath). */
+  const [tableCellMap, setTableCellMap] = createSignal<Record<string, Record<string, string>>>({});
   const navHistory = createNavHistory();
   let applyingNav = false;
   let statusTimer: number | undefined;
@@ -300,7 +317,7 @@ function App() {
   let detailPaneEl: HTMLElement | undefined;
   let resizeStartX = 0;
   let resizeStartWidth = 0;
-  let listColResizeId: ListColumnId | null = null;
+  let listColResizeId: ColumnId | null = null;
   let listColResizeStartX = 0;
   let listColResizeStartW = 0;
 
@@ -1917,7 +1934,7 @@ function App() {
     };
   }
 
-  function toggleSort(key: ListColumnId) {
+  function toggleSort(key: ColumnId) {
     if (sortKey() === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
@@ -1926,9 +1943,31 @@ function App() {
     }
   }
 
-  function sortIndicator(key: ListColumnId) {
+  function sortIndicator(key: ColumnId) {
     if (sortKey() !== key) return "";
     return sortDir() === "asc" ? " ▲" : " ▼";
+  }
+
+  function kindUsesPrinterColumns(kind: string, apiVersion: string): boolean {
+    if (isDemoMode() || isPseudoKind(kind)) return false;
+    if (findKindView(kind, apiVersion)) return false;
+    const discovered = (store.apiResources[store.selectedContext()] || []).find(
+      (r) => r.kind === kind && r.apiVersion === apiVersion,
+    );
+    if (discovered?.curated) return false;
+    return true;
+  }
+
+  function printerCellValue(obj: Record<string, unknown>, columnId: ColumnId): string {
+    const col = printerColumnMap().get(columnId);
+    if (!col) return "—";
+    if (col.jsonPath) return evalJsonPathCell(obj, col.jsonPath);
+    const byKey = tableCellMap()[objectKey(obj as never)];
+    if (byKey?.[columnId]) return byKey[columnId];
+    const ns = objectNamespace(obj as never);
+    const name = objectName(obj as never);
+    const fallback = tableCellMap()[`${ns}/${name}`];
+    return fallback?.[columnId] || "—";
   }
 
   const sortedObjects = createMemo(() => {
@@ -1937,78 +1976,86 @@ function App() {
     const dir = sortDir() === "asc" ? 1 : -1;
     items.sort((a, b) => {
       let cmp = 0;
-      switch (key) {
-        case "name":
-          cmp = objectName(a).localeCompare(objectName(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "namespace":
-          cmp = objectNamespace(a).localeCompare(objectNamespace(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "node":
-          cmp = podNodeName(a).localeCompare(podNodeName(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "status":
-          if (store.selectedKind().kind === "ReplicaSet") {
-            cmp =
-              replicaSetStatusRank(a, replicaSetCurrent()) -
-              replicaSetStatusRank(b, replicaSetCurrent());
-            if (cmp === 0) {
-              cmp = replicaSetStatusText(a, replicaSetCurrent()).localeCompare(
-                replicaSetStatusText(b, replicaSetCurrent()),
-                undefined,
-                { sensitivity: "base", numeric: true },
-              );
-            }
-          } else {
-            cmp = statusPhase(a).localeCompare(statusPhase(b), undefined, {
+      if (isPrinterColumnId(key)) {
+        cmp = printerCellValue(a, key).localeCompare(printerCellValue(b, key), undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+      } else {
+        switch (key as ListColumnId) {
+          case "name":
+            cmp = objectName(a).localeCompare(objectName(b), undefined, {
               sensitivity: "base",
               numeric: true,
             });
+            break;
+          case "namespace":
+            cmp = objectNamespace(a).localeCompare(objectNamespace(b), undefined, {
+              sensitivity: "base",
+              numeric: true,
+            });
+            break;
+          case "node":
+            cmp = podNodeName(a).localeCompare(podNodeName(b), undefined, {
+              sensitivity: "base",
+              numeric: true,
+            });
+            break;
+          case "status":
+            if (store.selectedKind().kind === "ReplicaSet") {
+              cmp =
+                replicaSetStatusRank(a, replicaSetCurrent()) -
+                replicaSetStatusRank(b, replicaSetCurrent());
+              if (cmp === 0) {
+                cmp = replicaSetStatusText(a, replicaSetCurrent()).localeCompare(
+                  replicaSetStatusText(b, replicaSetCurrent()),
+                  undefined,
+                  { sensitivity: "base", numeric: true },
+                );
+              }
+            } else {
+              cmp = statusPhase(a).localeCompare(statusPhase(b), undefined, {
+                sensitivity: "base",
+                numeric: true,
+              });
+            }
+            break;
+          case "summary": {
+            const sel = store.selectedKind();
+            const sa = kindViewListSummary(a as K8sObject, sel.kind, sel.apiVersion) || "";
+            const sb = kindViewListSummary(b as K8sObject, sel.kind, sel.apiVersion) || "";
+            cmp = sa.localeCompare(sb, undefined, { sensitivity: "base", numeric: true });
+            break;
           }
-          break;
-        case "summary": {
-          const sel = store.selectedKind();
-          const sa = kindViewListSummary(a as K8sObject, sel.kind, sel.apiVersion) || "";
-          const sb = kindViewListSummary(b as K8sObject, sel.kind, sel.apiVersion) || "";
-          cmp = sa.localeCompare(sb, undefined, { sensitivity: "base", numeric: true });
-          break;
-        }
-        case "cpu":
-          cmp = (resourceBudgetFor(a).cpu.used ?? -1) - (resourceBudgetFor(b).cpu.used ?? -1);
-          break;
-        case "memory":
-          cmp = (resourceBudgetFor(a).memory.used ?? -1) - (resourceBudgetFor(b).memory.used ?? -1);
-          break;
-        case "version":
-          cmp = nodeKubeletVersion(a).localeCompare(nodeKubeletVersion(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "pods": {
-          const usedA = store.nodePodCountsReady() ? (nodePodCounts()[objectName(a)] ?? 0) : -1;
-          const usedB = store.nodePodCountsReady() ? (nodePodCounts()[objectName(b)] ?? 0) : -1;
-          cmp = usedA - usedB;
-          if (cmp === 0) {
-            cmp = (nodePodLimit(a) ?? -1) - (nodePodLimit(b) ?? -1);
+          case "cpu":
+            cmp = (resourceBudgetFor(a).cpu.used ?? -1) - (resourceBudgetFor(b).cpu.used ?? -1);
+            break;
+          case "memory":
+            cmp =
+              (resourceBudgetFor(a).memory.used ?? -1) - (resourceBudgetFor(b).memory.used ?? -1);
+            break;
+          case "version":
+            cmp = nodeKubeletVersion(a).localeCompare(nodeKubeletVersion(b), undefined, {
+              sensitivity: "base",
+              numeric: true,
+            });
+            break;
+          case "pods": {
+            const usedA = store.nodePodCountsReady() ? (nodePodCounts()[objectName(a)] ?? 0) : -1;
+            const usedB = store.nodePodCountsReady() ? (nodePodCounts()[objectName(b)] ?? 0) : -1;
+            cmp = usedA - usedB;
+            if (cmp === 0) {
+              cmp = (nodePodLimit(a) ?? -1) - (nodePodLimit(b) ?? -1);
+            }
+            break;
           }
-          break;
+          case "age":
+            cmp = ageTimestamp(a) - ageTimestamp(b);
+            break;
+          case "expires":
+            cmp = expiryTimestamp(a) - expiryTimestamp(b);
+            break;
         }
-        case "age":
-          cmp = ageTimestamp(a) - ageTimestamp(b);
-          break;
-        case "expires":
-          cmp = expiryTimestamp(a) - expiryTimestamp(b);
-          break;
       }
       return cmp * dir;
     });
@@ -2055,17 +2102,26 @@ function App() {
     };
   });
 
-  const listAvailableColumns = createMemo(() => availableColumns(listColumnCaps()));
+  const printerColumnMap = createMemo(() => printerColumnsById(printerColumns()));
+
+  const listAvailableColumns = createMemo(() =>
+    availableColumns(listColumnCaps(), printerColumns()),
+  );
 
   const listVisibleColumns = createMemo(() =>
-    visibleColumns(columnPrefs(), store.selectedKind().kind, listAvailableColumns()),
+    visibleColumns(
+      columnPrefs(),
+      store.selectedKind().kind,
+      listAvailableColumns(),
+      printerColumnMap(),
+    ),
   );
 
   const listGridTemplate = createMemo(() =>
-    buildGridTemplate(listVisibleColumns(), columnPrefs().widths),
+    buildGridTemplate(listVisibleColumns(), columnPrefs().widths, printerColumnMap()),
   );
 
-  function colVisible(id: ListColumnId) {
+  function colVisible(id: ColumnId) {
     return listVisibleColumns().includes(id);
   }
 
@@ -2074,9 +2130,15 @@ function App() {
     if (persist) persistColumnPrefs(next);
   }
 
-  function onToggleListColumn(id: ListColumnId) {
+  function onToggleListColumn(id: ColumnId) {
     updateColumnPrefs(
-      toggleColumnHidden(columnPrefs(), store.selectedKind().kind, listAvailableColumns(), id),
+      toggleColumnHidden(
+        columnPrefs(),
+        store.selectedKind().kind,
+        listAvailableColumns(),
+        id,
+        printerColumnMap(),
+      ),
     );
   }
 
@@ -2088,7 +2150,7 @@ function App() {
     listColResizeId = null;
   }
 
-  function onListColResizePointerDown(id: ListColumnId, e: PointerEvent) {
+  function onListColResizePointerDown(id: ColumnId, e: PointerEvent) {
     if (e.button !== 0) return;
     const handle = e.currentTarget as HTMLElement;
     const cell = handle.parentElement;
@@ -2107,7 +2169,7 @@ function App() {
     if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
     const dx = e.clientX - listColResizeStartX;
     updateColumnPrefs(
-      setColumnWidth(columnPrefs(), listColResizeId, listColResizeStartW + dx),
+      setColumnWidth(columnPrefs(), listColResizeId, listColResizeStartW + dx, printerColumnMap()),
       false,
     );
   }
@@ -2119,7 +2181,7 @@ function App() {
     endListColResize();
   }
 
-  function onListColResizeDblClick(id: ListColumnId, e: MouseEvent) {
+  function onListColResizeDblClick(id: ColumnId, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     const widths = { ...columnPrefs().widths };
@@ -2135,6 +2197,59 @@ function App() {
     clearChecked();
     setCtxMenu(null);
     setColumnsMenuOpen(false);
+  });
+
+  createEffect(() => {
+    const ctx = store.selectedContext();
+    const kind = store.selectedKind();
+    const nss = store.selectedNamespaces[ctx] || [];
+    void store.apiResources[ctx];
+
+    if (!ctx || !kindUsesPrinterColumns(kind.kind, kind.apiVersion)) {
+      setPrinterColumns([]);
+      setTableCellMap({});
+      return;
+    }
+
+    let cancelled = false;
+    const nsArg = nss.length === 1 && nss[0] !== "*" ? nss[0] : null;
+
+    void (async () => {
+      try {
+        const cols = await api.getListColumns(ctx, kind.apiVersion, kind.kind);
+        if (cancelled) return;
+        setPrinterColumns(cols);
+        if (!printerColumnsNeedTable(cols)) {
+          setTableCellMap({});
+          return;
+        }
+        const table = await api.listResourceTable(ctx, kind.apiVersion, kind.kind, nsArg);
+        if (cancelled) return;
+        const next: Record<string, Record<string, string>> = {};
+        for (const row of table.rows) {
+          const cellsById: Record<string, string> = {};
+          table.columns.forEach((col, i) => {
+            if (shouldSkipPrinterColumn(col.name)) return;
+            const id = printerColumnId(col.name);
+            cellsById[id] = row.cells[i] ?? "";
+          });
+          if (row.uid) next[row.uid] = cellsById;
+          const fallback = `${row.namespace || ""}/${row.name}`;
+          next[fallback] = cellsById;
+        }
+        setTableCellMap(next);
+      } catch (err) {
+        console.warn("printer columns load failed", err);
+        if (!cancelled) {
+          setPrinterColumns([]);
+          setTableCellMap({});
+        }
+      }
+    })();
+
+    onCleanup(() => {
+      cancelled = true;
+    });
   });
 
   createEffect(() => {
@@ -2508,7 +2623,7 @@ function App() {
                         <div class="ctx-menu-label">Columns</div>
                         <For each={listAvailableColumns()}>
                           {(id) => {
-                            const meta = LIST_COLUMN_META[id];
+                            const meta = metaForColumn(id, printerColumnMap());
                             return (
                               <label
                                 class={`columns-menu-item ${meta.hideable ? "" : "disabled"}`}
@@ -2758,35 +2873,41 @@ function App() {
                                                 />
                                               </label>
                                               <For each={listVisibleColumns()}>
-                                                {(id) => (
-                                                  <div class="col-head">
-                                                    <button
-                                                      type="button"
-                                                      class={`sort-btn ${sortKey() === id ? "active" : ""}`}
-                                                      onClick={() => toggleSort(id)}
-                                                    >
-                                                      {LIST_COLUMN_META[id].label}
-                                                      {sortIndicator(id)}
-                                                    </button>
-                                                    <div
-                                                      class="col-resize"
-                                                      role="separator"
-                                                      aria-orientation="vertical"
-                                                      aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
-                                                      title="Drag to resize · double-click to reset"
-                                                      onPointerDown={(e) =>
-                                                        onListColResizePointerDown(id, e)
-                                                      }
-                                                      onPointerMove={onListColResizePointerMove}
-                                                      onPointerUp={onListColResizePointerUp}
-                                                      onPointerCancel={endListColResize}
-                                                      onLostPointerCapture={endListColResize}
-                                                      onDblClick={(e) =>
-                                                        onListColResizeDblClick(id, e)
-                                                      }
-                                                    />
-                                                  </div>
-                                                )}
+                                                {(id) => {
+                                                  const meta = metaForColumn(
+                                                    id,
+                                                    printerColumnMap(),
+                                                  );
+                                                  return (
+                                                    <div class="col-head">
+                                                      <button
+                                                        type="button"
+                                                        class={`sort-btn ${sortKey() === id ? "active" : ""}`}
+                                                        onClick={() => toggleSort(id)}
+                                                      >
+                                                        {meta.label}
+                                                        {sortIndicator(id)}
+                                                      </button>
+                                                      <div
+                                                        class="col-resize"
+                                                        role="separator"
+                                                        aria-orientation="vertical"
+                                                        aria-label={`Resize ${meta.label} column`}
+                                                        title="Drag to resize · double-click to reset"
+                                                        onPointerDown={(e) =>
+                                                          onListColResizePointerDown(id, e)
+                                                        }
+                                                        onPointerMove={onListColResizePointerMove}
+                                                        onPointerUp={onListColResizePointerUp}
+                                                        onPointerCancel={endListColResize}
+                                                        onLostPointerCapture={endListColResize}
+                                                        onDblClick={(e) =>
+                                                          onListColResizeDblClick(id, e)
+                                                        }
+                                                      />
+                                                    </div>
+                                                  );
+                                                }}
                                               </For>
                                             </div>
                                           }
@@ -2930,6 +3051,74 @@ function App() {
                                                     </span>
                                                   </span>
                                                 </Show>
+                                                <For
+                                                  each={listVisibleColumns().filter((id) =>
+                                                    isPrinterColumnId(id),
+                                                  )}
+                                                >
+                                                  {(id) => {
+                                                    const text = printerCellValue(obj, id);
+                                                    const kind = classifyPrinterColumnId(
+                                                      id,
+                                                      printerColumnMap(),
+                                                    );
+                                                    if (kind === "status" && text && text !== "—") {
+                                                      return (
+                                                        <span class="status-labels" title={text}>
+                                                          <span
+                                                            class={`status-label ${statusToneFromText(text)}`}
+                                                          >
+                                                            {text}
+                                                          </span>
+                                                        </span>
+                                                      );
+                                                    }
+                                                    if (kind === "node" && text && text !== "—") {
+                                                      return (
+                                                        <button
+                                                          type="button"
+                                                          class="relation-link mono"
+                                                          title={`Open node ${text}`}
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            openRelation({
+                                                              id: `node:${text}`,
+                                                              group: "Node",
+                                                              title: text,
+                                                              apiVersion: "v1",
+                                                              kind: "Node",
+                                                              name: text,
+                                                            });
+                                                          }}
+                                                        >
+                                                          {text}
+                                                        </button>
+                                                      );
+                                                    }
+                                                    if (kind === "image" && text && text !== "—") {
+                                                      const href = registryUrlForImage(text);
+                                                      if (href) {
+                                                        return (
+                                                          <a
+                                                            class="linkish mono"
+                                                            href={href}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            title={text}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                          >
+                                                            {text}
+                                                          </a>
+                                                        );
+                                                      }
+                                                    }
+                                                    return (
+                                                      <span class="muted" title={text}>
+                                                        {text}
+                                                      </span>
+                                                    );
+                                                  }}
+                                                </For>
                                                 <Show when={colVisible("age")}>
                                                   <span class="muted">
                                                     {ageFromTimestamp(

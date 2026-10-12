@@ -15,7 +15,9 @@ import type {
   NodeStats,
   PodMetrics,
   PortForwardInfo,
+  PrinterColumn,
   ResourceIdentifier,
+  ResourceTable,
   RollbackResult,
   RouteFlowGraph,
   TrivyCliInfo,
@@ -66,6 +68,20 @@ export const api = {
     namespace?: string | null,
   ) =>
     invoke<Record<string, unknown>[]>("list_resources_once", {
+      context,
+      apiVersion,
+      kind,
+      namespace: namespace ?? null,
+    }),
+  getListColumns: (context: string, apiVersion: string, kind: string) =>
+    invoke<PrinterColumn[]>("get_list_columns", { context, apiVersion, kind }),
+  listResourceTable: (
+    context: string,
+    apiVersion: string,
+    kind: string,
+    namespace?: string | null,
+  ) =>
+    invoke<ResourceTable>("list_resource_table", {
       context,
       apiVersion,
       kind,

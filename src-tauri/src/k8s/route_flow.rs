@@ -175,7 +175,7 @@ async fn get_dynamic(
     let (api, _) = manager
         .resolve_api(context, api_version, kind, namespace)
         .await?;
-    let obj = api.get(name).await.map_err(|e| KubyError::from(e))?;
+    let obj = api.get(name).await.map_err(KubyError::from)?;
     Ok(serde_json::to_value(obj)?)
 }
 

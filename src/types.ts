@@ -49,6 +49,29 @@ export interface DiscoveredResource {
   watchable: boolean;
 }
 
+/** Server-side list column (CRD additionalPrinterColumns or Table columnDefinitions). */
+export interface PrinterColumn {
+  name: string;
+  type: string;
+  format?: string | null;
+  description?: string | null;
+  /** Present for CRD columns; absent for built-in Table definitions. */
+  jsonPath?: string | null;
+  priority: number;
+}
+
+export interface ResourceTableRow {
+  cells: string[];
+  name: string;
+  namespace?: string | null;
+  uid?: string | null;
+}
+
+export interface ResourceTable {
+  columns: PrinterColumn[];
+  rows: ResourceTableRow[];
+}
+
 export interface ResourceIdentifier {
   context: string;
   apiVersion: string;

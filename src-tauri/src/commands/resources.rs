@@ -7,6 +7,7 @@ use tauri::{AppHandle, State};
 
 use crate::error::{kube_is_forbidden, kube_is_not_found, KubyError, Result};
 use crate::k8s::discovery::DiscoveredResource;
+use crate::k8s::printer_columns::{self, PrinterColumn, ResourceTable};
 use crate::k8s::watch;
 use crate::AppState;
 
@@ -298,4 +299,30 @@ pub async fn list_resources_once(
         .into_iter()
         .map(|o| serde_json::to_value(o).unwrap_or(json!({})))
         .collect())
+}
+
+#[tauri::command]
+pub async fn get_list_columns(
+    state: State<'_, AppState>,
+    context: String,
+    api_version: String,
+    kind: String,
+) -> Result<Vec<PrinterColumn>> {
+    let client = state.manager.client(&context)?;
+    let cache = state.manager.discovery(&context).await?;
+    printer_columns::get_list_columns(client, &cache, &api_version, &kind).await
+}
+
+#[tauri::command]
+pub async fn list_resource_table(
+    state: State<'_, AppState>,
+    context: String,
+    api_version: String,
+    kind: String,
+    namespace: Option<String>,
+) -> Result<ResourceTable> {
+    let client = state.manager.client(&context)?;
+    let cache = state.manager.discovery(&context).await?;
+    printer_columns::list_resource_table(client, &cache, &api_version, &kind, namespace.as_deref())
+        .await
 }

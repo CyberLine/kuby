@@ -178,6 +178,8 @@ pub fn run() {
             commands::resources::start_resource_watch,
             commands::resources::stop_resource_watch,
             commands::resources::list_resources_once,
+            commands::resources::get_list_columns,
+            commands::resources::list_resource_table,
             commands::actions::scale_workload,
             commands::actions::restart_workload,
             commands::actions::rollback_deployment,

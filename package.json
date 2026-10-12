@@ -16,7 +16,8 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "knip": "knip",
-    "quality": "pnpm typecheck && pnpm lint && pnpm knip",
+    "test:unit": "node --experimental-strip-types scripts/test-jsonpath.mjs && node --experimental-strip-types scripts/test-list-columns.mjs && node --experimental-strip-types scripts/test-printer-column-render.mjs",
+    "quality": "pnpm typecheck && pnpm lint && pnpm knip && pnpm test:unit",
     "prepare": "lefthook install"
   },
   "license": "MIT",

@@ -7,6 +7,7 @@ pub mod longhorn;
 pub mod manager;
 pub mod metrics;
 pub mod portforward;
+pub mod printer_columns;
 pub mod route_flow;
 pub mod trivy;
 pub mod watch;
