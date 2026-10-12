@@ -12,7 +12,20 @@ export async function applyTelemetry(enabled: boolean) {
         dsn: DSN,
         release: `kuby@${version}`,
         environment: import.meta.env.DEV ? "development" : "production",
-        sendDefaultPii: false,
+        // v11 replaced sendDefaultPii with dataCollection; keep the old restrictive defaults.
+        dataCollection: {
+          userInfo: false,
+          cookies: false,
+          httpHeaders: {
+            request: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+            response: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+          },
+          httpBodies: [],
+          urlQueryParams: { deny: ["forwarded", "-ip", "remote-", "via", "-user"] },
+          genAI: { inputs: false, outputs: false },
+          databaseQueryData: false,
+          graphQL: { document: false, variables: false },
+        },
       });
     }
   } else if (Sentry.getClient()) {
