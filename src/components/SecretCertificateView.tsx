@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, For, Index, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Index, onCleanup, Show } from "solid-js";
 import { api } from "../api/tauri";
 import type { K8sObject } from "../types";
 import {
@@ -140,31 +140,52 @@ export function SecretCertificateView(props: Props) {
 
   const keySummaries = createMemo(() => summarizeSecretKeys(resolvedData()));
 
+  let lastFetchKey = "";
   createEffect(() => {
+    // Track stable primitives — parent often rebuilds linkedSecret / data object literals.
     const data = props.data;
-    const linked = props.linkedSecret;
+    const linkedCtx = props.linkedSecret?.context;
+    const linkedNs = props.linkedSecret?.namespace ?? null;
+    const linkedName = props.linkedSecret?.name;
+    const secretType = props.secretType ?? null;
+    const dataFingerprint = data
+      ? Object.keys(data)
+          .sort()
+          .map((k) => `${k}:${(data[k] || "").length}`)
+          .join("|")
+      : "";
+    const fetchKey = `${linkedCtx ?? ""}|${linkedNs ?? ""}|${linkedName ?? ""}|${dataFingerprint}|${secretType ?? ""}`;
+
     let cancelled = false;
+    onCleanup(() => {
+      cancelled = true;
+    });
+
+    // Skip duplicate work when parent re-renders with the same logical inputs.
+    if (fetchKey === lastFetchKey) return;
+    lastFetchKey = fetchKey;
+
     setLoading(true);
     setLoadError(null);
 
     void (async () => {
       try {
         let map = data;
-        let type: string | null = props.secretType ?? null;
+        let type: string | null = secretType;
         let secretName: string | null = null;
 
-        if (linked) {
+        if (linkedCtx && linkedName) {
           const secret = (await api.getResource({
-            context: linked.context,
+            context: linkedCtx,
             apiVersion: "v1",
             kind: "Secret",
-            namespace: linked.namespace,
-            name: linked.name,
+            namespace: linkedNs,
+            name: linkedName,
           })) as K8sObject;
           if (cancelled) return;
           map = resourceDataMap(secret);
           type = typeof secret.type === "string" ? secret.type : type;
-          secretName = linked.name;
+          secretName = linkedName;
         }
 
         if (cancelled) return;
@@ -179,18 +200,14 @@ export function SecretCertificateView(props: Props) {
       } catch (e) {
         if (cancelled) return;
         setResolvedData(undefined);
-        setResolvedType(props.secretType ?? null);
-        setResolvedSecretName(props.linkedSecret?.name ?? null);
+        setResolvedType(secretType);
+        setResolvedSecretName(linkedName ?? null);
         setEntries([]);
         setLoadError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
-
-    return () => {
-      cancelled = true;
-    };
   });
 
   const flatCerts = createMemo(() => {

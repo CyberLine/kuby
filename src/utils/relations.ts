@@ -1,5 +1,6 @@
 import { objectName, objectNamespace } from "../constants/resources";
 import type { K8sObject } from "../types";
+import { kindViewRelations } from "../views/registry";
 
 export type RelationLink = {
   id: string;
@@ -140,6 +141,7 @@ export function extractRelations(
   discovered?: { group?: string; kind: string; plural: string; apiVersion: string }[],
 ): RelationLink[] {
   const links: RelationLink[] = [];
+  links.push(...kindViewRelations(obj, kind, discovered as never));
   const name = objectName(obj);
   const ns = objectNamespace(obj) || null;
   const uid =

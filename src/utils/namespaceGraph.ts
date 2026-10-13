@@ -261,6 +261,59 @@ export function buildNamespaceGraph(
       }
     }
 
+    if (
+      (kind === "IngressRoute" || kind === "IngressRouteTCP" || kind === "IngressRouteUDP") &&
+      spec
+    ) {
+      const routes = Array.isArray(spec.routes) ? spec.routes : [];
+      for (const route of routes) {
+        const r = asRecord(route);
+        const middlewares = Array.isArray(r?.middlewares) ? r!.middlewares : [];
+        for (const mw of middlewares) {
+          const m = asRecord(mw);
+          if (typeof m?.name === "string") {
+            const middleware = findByName("Middleware", m.name);
+            if (middleware) addEdge(uid, objectKey(middleware));
+          }
+        }
+        const services = Array.isArray(r?.services) ? r!.services : [];
+        for (const svc of services) {
+          const s = asRecord(svc);
+          if (typeof s?.name !== "string") continue;
+          const svcKind = typeof s.kind === "string" ? s.kind : "Service";
+          const target = findByName(svcKind, s.name) || findByName("Service", s.name);
+          if (target) addEdge(uid, objectKey(target));
+        }
+      }
+    }
+
+    if ((kind === "HTTPRoute" || kind === "GRPCRoute" || kind === "TCPRoute") && spec) {
+      const parents = Array.isArray(spec.parentRefs) ? spec.parentRefs : [];
+      for (const p of parents) {
+        const parent = asRecord(p);
+        if (typeof parent?.name === "string") {
+          const gw = findByName(
+            typeof parent.kind === "string" ? parent.kind : "Gateway",
+            parent.name,
+          );
+          if (gw) addEdge(objectKey(gw), uid);
+        }
+      }
+      const rules = Array.isArray(spec.rules) ? spec.rules : [];
+      for (const rule of rules) {
+        const backends = Array.isArray(asRecord(rule)?.backendRefs)
+          ? (asRecord(rule)!.backendRefs as unknown[])
+          : [];
+        for (const b of backends) {
+          const br = asRecord(b);
+          if (typeof br?.name === "string") {
+            const service = findByName(typeof br.kind === "string" ? br.kind : "Service", br.name);
+            if (service) addEdge(uid, objectKey(service));
+          }
+        }
+      }
+    }
+
     if (kind === "Endpoints") {
       const service = findByName("Service", objectName(obj));
       if (service) {

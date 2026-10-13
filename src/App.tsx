@@ -21,6 +21,7 @@ import logo from "./assets/logo.png";
 import { AboutDialog } from "./components/AboutDialog";
 import { CodeEditor } from "./components/CodeEditor";
 import { ContextPicker } from "./components/ContextPicker";
+import { CrdDetailPanel } from "./components/crd/CrdDetailPanel";
 import { ExecTerminal } from "./components/ExecTerminal";
 import { HelmReleasesView } from "./components/HelmReleasesView";
 import { LoadingSpinner } from "./components/LoadingSpinner";
@@ -50,8 +51,12 @@ import { TelemetryDialog } from "./components/TelemetryDialog";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { VirtualList } from "./components/VirtualList";
 import {
+  canArgoRefresh,
+  canArgoSync,
   canDeleteKind,
+  canFluxAction,
   canFluxHelmReleaseAction,
+  canFluxSuspend,
   canNodeAction,
   canRestartKind,
   canRollbackDeployment,
@@ -92,6 +97,7 @@ import type {
   PanelTab,
   PodMetrics,
   PortForwardInfo,
+  PrinterColumn,
 } from "./types";
 import {
   certificateExpiryFromObject,
@@ -99,16 +105,23 @@ import {
   formatCertDate,
   formatExpiryListLabel,
 } from "./utils/certificates";
+import { evalJsonPathCell } from "./utils/jsonPath";
 import {
   availableColumns,
   buildGridTemplate,
+  type ColumnId,
   type ColumnPrefs,
-  LIST_COLUMN_META,
+  isPrinterColumnId,
   type ListColumnId,
+  metaForColumn,
   persistColumnPrefs,
   podNodeName,
+  printerColumnId,
+  printerColumnsById,
+  printerColumnsNeedTable,
   readColumnPrefs,
   setColumnWidth,
+  shouldSkipPrinterColumn,
   toggleColumnHidden,
   visibleColumns,
 } from "./utils/listColumns";
@@ -126,6 +139,11 @@ import {
   nodeStatusLabels,
   nodeStatusText,
 } from "./utils/nodeStatus";
+import {
+  classifyPrinterColumnId,
+  registryUrlForImage,
+  statusToneFromText,
+} from "./utils/printerColumnRender";
 import { formatBytes, formatCpu } from "./utils/quantity";
 import { extractRelations, groupRelations, type RelationLink } from "./utils/relations";
 import {
@@ -138,6 +156,16 @@ import {
   replicaSetStatusText,
 } from "./utils/replicaSetStatus";
 import { nodeResourceBudget, podResourceBudget } from "./utils/resourceBudget";
+import { isFluxSuspended } from "./views/families/flux";
+import {
+  curatedCrdNavItems,
+  findKindView,
+  kindViewHasExpiresColumn,
+  kindViewHasStatusColumn,
+  kindViewHasSummaryColumn,
+  kindViewListSummary,
+  kindViewStatusLabels,
+} from "./views/registry";
 import "./App.css";
 
 const OVERVIEW_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
@@ -273,11 +301,15 @@ function App() {
     y: number;
     keys: string[];
   } | null>(null);
-  const [sortKey, setSortKey] = createSignal<ListColumnId>("name");
+  const [sortKey, setSortKey] = createSignal<ColumnId>("name");
   const [sortDir, setSortDir] = createSignal<"asc" | "desc">("asc");
   const [detailWidth, setDetailWidth] = createSignal<number | null>(readDetailWidth());
   const [columnPrefs, setColumnPrefs] = createSignal<ColumnPrefs>(readColumnPrefs());
   const [columnsMenuOpen, setColumnsMenuOpen] = createSignal(false);
+  /** Auto columns for non-curated kinds (CRD printer columns / Table defs). */
+  const [printerColumns, setPrinterColumns] = createSignal<PrinterColumn[]>([]);
+  /** Table cell overlay keyed by objectKey → columnId → text (built-ins without jsonPath). */
+  const [tableCellMap, setTableCellMap] = createSignal<Record<string, Record<string, string>>>({});
   const navHistory = createNavHistory();
   let applyingNav = false;
   let statusTimer: number | undefined;
@@ -285,7 +317,7 @@ function App() {
   let detailPaneEl: HTMLElement | undefined;
   let resizeStartX = 0;
   let resizeStartWidth = 0;
-  let listColResizeId: ListColumnId | null = null;
+  let listColResizeId: ColumnId | null = null;
   let listColResizeStartX = 0;
   let listColResizeStartW = 0;
 
@@ -995,7 +1027,7 @@ function App() {
       const hasLonghorn = clusterHasLonghorn(discovered);
       const hasFluxHelm = clusterHasFluxHelm(discovered);
       const fluxAv = fluxHelmReleaseApiVersion(discovered);
-      return CURATED_NAV.filter((item) => {
+      const curated = CURATED_NAV.filter((item) => {
         if (item.kind === "Longhorn") return hasLonghorn;
         if (item.kind === "HelmRelease") return hasFluxHelm;
         return true;
@@ -1005,6 +1037,16 @@ function App() {
         }
         return item;
       });
+      const crdNav = curatedCrdNavItems(discovered).map((item) => ({
+        kind: item.kind,
+        apiVersion: item.apiVersion,
+        group: item.group,
+        label: item.label,
+      }));
+      // Avoid duplicating Flux HelmRelease already in CURATED_NAV.
+      const seen = new Set(curated.map((i) => `${i.apiVersion}/${i.kind}`));
+      const extra = crdNav.filter((i) => !seen.has(`${i.apiVersion}/${i.kind}`));
+      return [...curated, ...extra];
     }
     const ctx = store.selectedContext();
     const discovered = store.apiResources[ctx] || [];
@@ -1230,8 +1272,7 @@ function App() {
   }
 
   function isFluxHelmReleaseSuspended(obj: K8sObject): boolean {
-    const spec = obj.spec as { suspend?: boolean } | undefined;
-    return Boolean(spec?.suspend);
+    return isFluxSuspended(obj);
   }
 
   async function runFluxHelmReleaseAction(
@@ -1240,7 +1281,13 @@ function App() {
   ) {
     setCtxMenu(null);
     const kind = store.selectedKind();
-    if (!canFluxHelmReleaseAction(kind.kind, kind.apiVersion) || !keys.length) return;
+    const canAct =
+      action === "reconcile"
+        ? canFluxAction(kind.kind, kind.apiVersion) ||
+          canFluxHelmReleaseAction(kind.kind, kind.apiVersion)
+        : canFluxSuspend(kind.kind, kind.apiVersion) ||
+          canFluxHelmReleaseAction(kind.kind, kind.apiVersion);
+    if (!canAct || !keys.length) return;
     const objs = objectsByKeys(keys);
     if (!objs.length) return;
 
@@ -1253,9 +1300,9 @@ function App() {
     if (!targets.length) {
       showStatus(
         action === "suspend"
-          ? "All selected HelmReleases are already suspended"
+          ? `All selected ${kind.kind}s are already suspended`
           : action === "resume"
-            ? "No selected HelmReleases are suspended"
+            ? `No selected ${kind.kind}s are suspended`
             : "Nothing to reconcile",
       );
       return;
@@ -1263,7 +1310,7 @@ function App() {
 
     if (action === "suspend" || action === "resume") {
       const ok = await confirmAction(
-        `${action === "suspend" ? "Suspend" : "Resume"} ${targets.length} HelmRelease${
+        `${action === "suspend" ? "Suspend" : "Resume"} ${targets.length} ${kind.kind}${
           targets.length === 1 ? "" : "s"
         }?`,
       );
@@ -1277,18 +1324,21 @@ function App() {
       const name = objectName(obj);
       const ns = objectNamespace(obj);
       const apiVersion = (obj.apiVersion as string) || kind.apiVersion;
+      const objKind = (obj.kind as string) || kind.kind;
       try {
         if (action === "reconcile") {
-          await api.fluxHelmReleaseReconcile({
+          await api.fluxReconcile({
             context: ctx,
             apiVersion,
+            kind: objKind,
             namespace: ns,
             name,
           });
         } else {
-          await api.fluxHelmReleaseSetSuspend({
+          await api.fluxSetSuspend({
             context: ctx,
             apiVersion,
+            kind: objKind,
             namespace: ns,
             name,
             suspend: action === "suspend",
@@ -1309,10 +1359,60 @@ function App() {
     } else {
       showStatus(
         action === "reconcile"
-          ? `Reconcile requested for ${okCount} HelmRelease${okCount === 1 ? "" : "s"}`
-          : `${action === "suspend" ? "Suspended" : "Resumed"} ${okCount} HelmRelease${
+          ? `Reconcile requested for ${okCount} ${kind.kind}${okCount === 1 ? "" : "s"}`
+          : `${action === "suspend" ? "Suspended" : "Resumed"} ${okCount} ${kind.kind}${
               okCount === 1 ? "" : "s"
             }`,
+      );
+    }
+    await reloadCurrentList();
+  }
+
+  async function runArgoAction(action: "refresh" | "sync", keys: string[]) {
+    setCtxMenu(null);
+    const kind = store.selectedKind();
+    if (action === "refresh" && !canArgoRefresh(kind.kind, kind.apiVersion)) return;
+    if (action === "sync" && !canArgoSync(kind.kind, kind.apiVersion)) return;
+    if (!keys.length) return;
+    const objs = objectsByKeys(keys);
+    if (!objs.length) return;
+
+    if (action === "sync") {
+      const ok = await confirmAction(
+        `Sync ${objs.length} Application${objs.length === 1 ? "" : "s"}? This updates the cluster.`,
+      );
+      if (!ok) return;
+    }
+
+    const ctx = store.selectedContext();
+    let okCount = 0;
+    const errors: string[] = [];
+    for (const obj of objs) {
+      const name = objectName(obj);
+      const ns = objectNamespace(obj);
+      const apiVersion = (obj.apiVersion as string) || kind.apiVersion;
+      try {
+        if (action === "refresh") {
+          await api.argoAppRefresh({ context: ctx, apiVersion, namespace: ns, name });
+        } else {
+          await api.argoAppSync({ context: ctx, apiVersion, namespace: ns, name });
+        }
+        okCount += 1;
+      } catch (e) {
+        errors.push(`${name}: ${String(e)}`);
+      }
+    }
+    if (errors.length) {
+      showStatus(
+        `${action} ${okCount}/${objs.length}. ${errors.slice(0, 3).join(" · ")}`,
+        true,
+        10000,
+      );
+    } else {
+      showStatus(
+        action === "refresh"
+          ? `Refresh requested for ${okCount} Application${okCount === 1 ? "" : "s"}`
+          : `Sync started for ${okCount} Application${okCount === 1 ? "" : "s"}`,
       );
     }
     await reloadCurrentList();
@@ -1687,6 +1787,8 @@ function App() {
       ?.deletionTimestamp;
     if (deletionTimestamp) return "Terminating";
     const sel = store.selectedKind();
+    const crdLabels = kindViewStatusLabels(obj as K8sObject, sel.kind, sel.apiVersion);
+    if (crdLabels?.length) return crdLabels.map((l) => l.text).join(", ");
     if (isCoreNode(sel.kind, sel.apiVersion)) {
       return nodeStatusText(obj);
     }
@@ -1731,6 +1833,8 @@ function App() {
       return [{ text: "Terminating", tone: "warn" as const }];
     }
     const sel = store.selectedKind();
+    const crdLabels = kindViewStatusLabels(obj as K8sObject, sel.kind, sel.apiVersion);
+    if (crdLabels?.length) return crdLabels;
     if (isCoreNode(sel.kind, sel.apiVersion)) {
       return nodeStatusLabels(obj);
     }
@@ -1830,7 +1934,7 @@ function App() {
     };
   }
 
-  function toggleSort(key: ListColumnId) {
+  function toggleSort(key: ColumnId) {
     if (sortKey() === key) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
@@ -1839,9 +1943,31 @@ function App() {
     }
   }
 
-  function sortIndicator(key: ListColumnId) {
+  function sortIndicator(key: ColumnId) {
     if (sortKey() !== key) return "";
     return sortDir() === "asc" ? " ▲" : " ▼";
+  }
+
+  function kindUsesPrinterColumns(kind: string, apiVersion: string): boolean {
+    if (isDemoMode() || isPseudoKind(kind)) return false;
+    if (findKindView(kind, apiVersion)) return false;
+    const discovered = (store.apiResources[store.selectedContext()] || []).find(
+      (r) => r.kind === kind && r.apiVersion === apiVersion,
+    );
+    if (discovered?.curated) return false;
+    return true;
+  }
+
+  function printerCellValue(obj: Record<string, unknown>, columnId: ColumnId): string {
+    const col = printerColumnMap().get(columnId);
+    if (!col) return "—";
+    if (col.jsonPath) return evalJsonPathCell(obj, col.jsonPath);
+    const byKey = tableCellMap()[objectKey(obj as never)];
+    if (byKey?.[columnId]) return byKey[columnId];
+    const ns = objectNamespace(obj as never);
+    const name = objectName(obj as never);
+    const fallback = tableCellMap()[`${ns}/${name}`];
+    return fallback?.[columnId] || "—";
   }
 
   const sortedObjects = createMemo(() => {
@@ -1850,71 +1976,86 @@ function App() {
     const dir = sortDir() === "asc" ? 1 : -1;
     items.sort((a, b) => {
       let cmp = 0;
-      switch (key) {
-        case "name":
-          cmp = objectName(a).localeCompare(objectName(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "namespace":
-          cmp = objectNamespace(a).localeCompare(objectNamespace(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "node":
-          cmp = podNodeName(a).localeCompare(podNodeName(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "status":
-          if (store.selectedKind().kind === "ReplicaSet") {
-            cmp =
-              replicaSetStatusRank(a, replicaSetCurrent()) -
-              replicaSetStatusRank(b, replicaSetCurrent());
-            if (cmp === 0) {
-              cmp = replicaSetStatusText(a, replicaSetCurrent()).localeCompare(
-                replicaSetStatusText(b, replicaSetCurrent()),
-                undefined,
-                { sensitivity: "base", numeric: true },
-              );
-            }
-          } else {
-            cmp = statusPhase(a).localeCompare(statusPhase(b), undefined, {
+      if (isPrinterColumnId(key)) {
+        cmp = printerCellValue(a, key).localeCompare(printerCellValue(b, key), undefined, {
+          sensitivity: "base",
+          numeric: true,
+        });
+      } else {
+        switch (key as ListColumnId) {
+          case "name":
+            cmp = objectName(a).localeCompare(objectName(b), undefined, {
               sensitivity: "base",
               numeric: true,
             });
+            break;
+          case "namespace":
+            cmp = objectNamespace(a).localeCompare(objectNamespace(b), undefined, {
+              sensitivity: "base",
+              numeric: true,
+            });
+            break;
+          case "node":
+            cmp = podNodeName(a).localeCompare(podNodeName(b), undefined, {
+              sensitivity: "base",
+              numeric: true,
+            });
+            break;
+          case "status":
+            if (store.selectedKind().kind === "ReplicaSet") {
+              cmp =
+                replicaSetStatusRank(a, replicaSetCurrent()) -
+                replicaSetStatusRank(b, replicaSetCurrent());
+              if (cmp === 0) {
+                cmp = replicaSetStatusText(a, replicaSetCurrent()).localeCompare(
+                  replicaSetStatusText(b, replicaSetCurrent()),
+                  undefined,
+                  { sensitivity: "base", numeric: true },
+                );
+              }
+            } else {
+              cmp = statusPhase(a).localeCompare(statusPhase(b), undefined, {
+                sensitivity: "base",
+                numeric: true,
+              });
+            }
+            break;
+          case "summary": {
+            const sel = store.selectedKind();
+            const sa = kindViewListSummary(a as K8sObject, sel.kind, sel.apiVersion) || "";
+            const sb = kindViewListSummary(b as K8sObject, sel.kind, sel.apiVersion) || "";
+            cmp = sa.localeCompare(sb, undefined, { sensitivity: "base", numeric: true });
+            break;
           }
-          break;
-        case "cpu":
-          cmp = (resourceBudgetFor(a).cpu.used ?? -1) - (resourceBudgetFor(b).cpu.used ?? -1);
-          break;
-        case "memory":
-          cmp = (resourceBudgetFor(a).memory.used ?? -1) - (resourceBudgetFor(b).memory.used ?? -1);
-          break;
-        case "version":
-          cmp = nodeKubeletVersion(a).localeCompare(nodeKubeletVersion(b), undefined, {
-            sensitivity: "base",
-            numeric: true,
-          });
-          break;
-        case "pods": {
-          const usedA = store.nodePodCountsReady() ? (nodePodCounts()[objectName(a)] ?? 0) : -1;
-          const usedB = store.nodePodCountsReady() ? (nodePodCounts()[objectName(b)] ?? 0) : -1;
-          cmp = usedA - usedB;
-          if (cmp === 0) {
-            cmp = (nodePodLimit(a) ?? -1) - (nodePodLimit(b) ?? -1);
+          case "cpu":
+            cmp = (resourceBudgetFor(a).cpu.used ?? -1) - (resourceBudgetFor(b).cpu.used ?? -1);
+            break;
+          case "memory":
+            cmp =
+              (resourceBudgetFor(a).memory.used ?? -1) - (resourceBudgetFor(b).memory.used ?? -1);
+            break;
+          case "version":
+            cmp = nodeKubeletVersion(a).localeCompare(nodeKubeletVersion(b), undefined, {
+              sensitivity: "base",
+              numeric: true,
+            });
+            break;
+          case "pods": {
+            const usedA = store.nodePodCountsReady() ? (nodePodCounts()[objectName(a)] ?? 0) : -1;
+            const usedB = store.nodePodCountsReady() ? (nodePodCounts()[objectName(b)] ?? 0) : -1;
+            cmp = usedA - usedB;
+            if (cmp === 0) {
+              cmp = (nodePodLimit(a) ?? -1) - (nodePodLimit(b) ?? -1);
+            }
+            break;
           }
-          break;
+          case "age":
+            cmp = ageTimestamp(a) - ageTimestamp(b);
+            break;
+          case "expires":
+            cmp = expiryTimestamp(a) - expiryTimestamp(b);
+            break;
         }
-        case "age":
-          cmp = ageTimestamp(a) - ageTimestamp(b);
-          break;
-        case "expires":
-          cmp = expiryTimestamp(a) - expiryTimestamp(b);
-          break;
       }
       return cmp * dir;
     });
@@ -1949,24 +2090,38 @@ function App() {
       namespace: discovered ? discovered.namespaced : kindHasNamespaceColumn(kind.kind),
       node: kindHasNodeColumn(kind.kind),
       version: coreNode,
-      status: kindHasStatusColumn(kind.kind, kind.apiVersion),
+      status:
+        kindHasStatusColumn(kind.kind, kind.apiVersion) ||
+        kindViewHasStatusColumn(kind.kind, kind.apiVersion),
+      summary: kindViewHasSummaryColumn(kind.kind, kind.apiVersion),
       pods: coreNode,
       metrics: kind.kind === "Pod" || coreNode,
-      expires: kindHasExpiresColumn(kind.kind, kind.apiVersion),
+      expires:
+        kindHasExpiresColumn(kind.kind, kind.apiVersion) ||
+        kindViewHasExpiresColumn(kind.kind, kind.apiVersion),
     };
   });
 
-  const listAvailableColumns = createMemo(() => availableColumns(listColumnCaps()));
+  const printerColumnMap = createMemo(() => printerColumnsById(printerColumns()));
+
+  const listAvailableColumns = createMemo(() =>
+    availableColumns(listColumnCaps(), printerColumns()),
+  );
 
   const listVisibleColumns = createMemo(() =>
-    visibleColumns(columnPrefs(), store.selectedKind().kind, listAvailableColumns()),
+    visibleColumns(
+      columnPrefs(),
+      store.selectedKind().kind,
+      listAvailableColumns(),
+      printerColumnMap(),
+    ),
   );
 
   const listGridTemplate = createMemo(() =>
-    buildGridTemplate(listVisibleColumns(), columnPrefs().widths),
+    buildGridTemplate(listVisibleColumns(), columnPrefs().widths, printerColumnMap()),
   );
 
-  function colVisible(id: ListColumnId) {
+  function colVisible(id: ColumnId) {
     return listVisibleColumns().includes(id);
   }
 
@@ -1975,9 +2130,15 @@ function App() {
     if (persist) persistColumnPrefs(next);
   }
 
-  function onToggleListColumn(id: ListColumnId) {
+  function onToggleListColumn(id: ColumnId) {
     updateColumnPrefs(
-      toggleColumnHidden(columnPrefs(), store.selectedKind().kind, listAvailableColumns(), id),
+      toggleColumnHidden(
+        columnPrefs(),
+        store.selectedKind().kind,
+        listAvailableColumns(),
+        id,
+        printerColumnMap(),
+      ),
     );
   }
 
@@ -1989,7 +2150,7 @@ function App() {
     listColResizeId = null;
   }
 
-  function onListColResizePointerDown(id: ListColumnId, e: PointerEvent) {
+  function onListColResizePointerDown(id: ColumnId, e: PointerEvent) {
     if (e.button !== 0) return;
     const handle = e.currentTarget as HTMLElement;
     const cell = handle.parentElement;
@@ -2008,7 +2169,7 @@ function App() {
     if (!(e.currentTarget as HTMLElement).hasPointerCapture(e.pointerId)) return;
     const dx = e.clientX - listColResizeStartX;
     updateColumnPrefs(
-      setColumnWidth(columnPrefs(), listColResizeId, listColResizeStartW + dx),
+      setColumnWidth(columnPrefs(), listColResizeId, listColResizeStartW + dx, printerColumnMap()),
       false,
     );
   }
@@ -2020,7 +2181,7 @@ function App() {
     endListColResize();
   }
 
-  function onListColResizeDblClick(id: ListColumnId, e: MouseEvent) {
+  function onListColResizeDblClick(id: ColumnId, e: MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
     const widths = { ...columnPrefs().widths };
@@ -2036,6 +2197,59 @@ function App() {
     clearChecked();
     setCtxMenu(null);
     setColumnsMenuOpen(false);
+  });
+
+  createEffect(() => {
+    const ctx = store.selectedContext();
+    const kind = store.selectedKind();
+    const nss = store.selectedNamespaces[ctx] || [];
+    void store.apiResources[ctx];
+
+    if (!ctx || !kindUsesPrinterColumns(kind.kind, kind.apiVersion)) {
+      setPrinterColumns([]);
+      setTableCellMap({});
+      return;
+    }
+
+    let cancelled = false;
+    const nsArg = nss.length === 1 && nss[0] !== "*" ? nss[0] : null;
+
+    void (async () => {
+      try {
+        const cols = await api.getListColumns(ctx, kind.apiVersion, kind.kind);
+        if (cancelled) return;
+        setPrinterColumns(cols);
+        if (!printerColumnsNeedTable(cols)) {
+          setTableCellMap({});
+          return;
+        }
+        const table = await api.listResourceTable(ctx, kind.apiVersion, kind.kind, nsArg);
+        if (cancelled) return;
+        const next: Record<string, Record<string, string>> = {};
+        for (const row of table.rows) {
+          const cellsById: Record<string, string> = {};
+          table.columns.forEach((col, i) => {
+            if (shouldSkipPrinterColumn(col.name)) return;
+            const id = printerColumnId(col.name);
+            cellsById[id] = row.cells[i] ?? "";
+          });
+          if (row.uid) next[row.uid] = cellsById;
+          const fallback = `${row.namespace || ""}/${row.name}`;
+          next[fallback] = cellsById;
+        }
+        setTableCellMap(next);
+      } catch (err) {
+        console.warn("printer columns load failed", err);
+        if (!cancelled) {
+          setPrinterColumns([]);
+          setTableCellMap({});
+        }
+      }
+    })();
+
+    onCleanup(() => {
+      cancelled = true;
+    });
   });
 
   createEffect(() => {
@@ -2409,7 +2623,7 @@ function App() {
                         <div class="ctx-menu-label">Columns</div>
                         <For each={listAvailableColumns()}>
                           {(id) => {
-                            const meta = LIST_COLUMN_META[id];
+                            const meta = metaForColumn(id, printerColumnMap());
                             return (
                               <label
                                 class={`columns-menu-item ${meta.hideable ? "" : "disabled"}`}
@@ -2541,10 +2755,16 @@ function App() {
                                               </button>
                                             </Show>
                                             <Show
-                                              when={canFluxHelmReleaseAction(
-                                                store.selectedKind().kind,
-                                                store.selectedKind().apiVersion,
-                                              )}
+                                              when={
+                                                canFluxSuspend(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                ) ||
+                                                canFluxHelmReleaseAction(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                )
+                                              }
                                             >
                                               <button
                                                 class="btn"
@@ -2566,6 +2786,19 @@ function App() {
                                               >
                                                 Resume
                                               </button>
+                                            </Show>
+                                            <Show
+                                              when={
+                                                canFluxAction(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                ) ||
+                                                canFluxHelmReleaseAction(
+                                                  store.selectedKind().kind,
+                                                  store.selectedKind().apiVersion,
+                                                )
+                                              }
+                                            >
                                               <button
                                                 class="btn"
                                                 onClick={() =>
@@ -2575,6 +2808,29 @@ function App() {
                                                 }
                                               >
                                                 Reconcile
+                                              </button>
+                                            </Show>
+                                            <Show
+                                              when={canArgoRefresh(
+                                                store.selectedKind().kind,
+                                                store.selectedKind().apiVersion,
+                                              )}
+                                            >
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runArgoAction("refresh", [...checkedKeys()])
+                                                }
+                                              >
+                                                Refresh
+                                              </button>
+                                              <button
+                                                class="btn"
+                                                onClick={() =>
+                                                  void runArgoAction("sync", [...checkedKeys()])
+                                                }
+                                              >
+                                                Sync
                                               </button>
                                             </Show>
                                             <button
@@ -2617,35 +2873,41 @@ function App() {
                                                 />
                                               </label>
                                               <For each={listVisibleColumns()}>
-                                                {(id) => (
-                                                  <div class="col-head">
-                                                    <button
-                                                      type="button"
-                                                      class={`sort-btn ${sortKey() === id ? "active" : ""}`}
-                                                      onClick={() => toggleSort(id)}
-                                                    >
-                                                      {LIST_COLUMN_META[id].label}
-                                                      {sortIndicator(id)}
-                                                    </button>
-                                                    <div
-                                                      class="col-resize"
-                                                      role="separator"
-                                                      aria-orientation="vertical"
-                                                      aria-label={`Resize ${LIST_COLUMN_META[id].label} column`}
-                                                      title="Drag to resize · double-click to reset"
-                                                      onPointerDown={(e) =>
-                                                        onListColResizePointerDown(id, e)
-                                                      }
-                                                      onPointerMove={onListColResizePointerMove}
-                                                      onPointerUp={onListColResizePointerUp}
-                                                      onPointerCancel={endListColResize}
-                                                      onLostPointerCapture={endListColResize}
-                                                      onDblClick={(e) =>
-                                                        onListColResizeDblClick(id, e)
-                                                      }
-                                                    />
-                                                  </div>
-                                                )}
+                                                {(id) => {
+                                                  const meta = metaForColumn(
+                                                    id,
+                                                    printerColumnMap(),
+                                                  );
+                                                  return (
+                                                    <div class="col-head">
+                                                      <button
+                                                        type="button"
+                                                        class={`sort-btn ${sortKey() === id ? "active" : ""}`}
+                                                        onClick={() => toggleSort(id)}
+                                                      >
+                                                        {meta.label}
+                                                        {sortIndicator(id)}
+                                                      </button>
+                                                      <div
+                                                        class="col-resize"
+                                                        role="separator"
+                                                        aria-orientation="vertical"
+                                                        aria-label={`Resize ${meta.label} column`}
+                                                        title="Drag to resize · double-click to reset"
+                                                        onPointerDown={(e) =>
+                                                          onListColResizePointerDown(id, e)
+                                                        }
+                                                        onPointerMove={onListColResizePointerMove}
+                                                        onPointerUp={onListColResizePointerUp}
+                                                        onPointerCancel={endListColResize}
+                                                        onLostPointerCapture={endListColResize}
+                                                        onDblClick={(e) =>
+                                                          onListColResizeDblClick(id, e)
+                                                        }
+                                                      />
+                                                    </div>
+                                                  );
+                                                }}
                                               </For>
                                             </div>
                                           }
@@ -2742,6 +3004,24 @@ function App() {
                                                     </For>
                                                   </span>
                                                 </Show>
+                                                <Show when={colVisible("summary")}>
+                                                  <span
+                                                    class="muted"
+                                                    title={
+                                                      kindViewListSummary(
+                                                        obj as K8sObject,
+                                                        store.selectedKind().kind,
+                                                        store.selectedKind().apiVersion,
+                                                      ) || ""
+                                                    }
+                                                  >
+                                                    {kindViewListSummary(
+                                                      obj as K8sObject,
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    ) || "—"}
+                                                  </span>
+                                                </Show>
                                                 <Show when={colVisible("pods")}>
                                                   <span
                                                     class="muted"
@@ -2771,6 +3051,74 @@ function App() {
                                                     </span>
                                                   </span>
                                                 </Show>
+                                                <For
+                                                  each={listVisibleColumns().filter((id) =>
+                                                    isPrinterColumnId(id),
+                                                  )}
+                                                >
+                                                  {(id) => {
+                                                    const text = printerCellValue(obj, id);
+                                                    const kind = classifyPrinterColumnId(
+                                                      id,
+                                                      printerColumnMap(),
+                                                    );
+                                                    if (kind === "status" && text && text !== "—") {
+                                                      return (
+                                                        <span class="status-labels" title={text}>
+                                                          <span
+                                                            class={`status-label ${statusToneFromText(text)}`}
+                                                          >
+                                                            {text}
+                                                          </span>
+                                                        </span>
+                                                      );
+                                                    }
+                                                    if (kind === "node" && text && text !== "—") {
+                                                      return (
+                                                        <button
+                                                          type="button"
+                                                          class="relation-link mono"
+                                                          title={`Open node ${text}`}
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            openRelation({
+                                                              id: `node:${text}`,
+                                                              group: "Node",
+                                                              title: text,
+                                                              apiVersion: "v1",
+                                                              kind: "Node",
+                                                              name: text,
+                                                            });
+                                                          }}
+                                                        >
+                                                          {text}
+                                                        </button>
+                                                      );
+                                                    }
+                                                    if (kind === "image" && text && text !== "—") {
+                                                      const href = registryUrlForImage(text);
+                                                      if (href) {
+                                                        return (
+                                                          <a
+                                                            class="linkish mono"
+                                                            href={href}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            title={text}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                          >
+                                                            {text}
+                                                          </a>
+                                                        );
+                                                      }
+                                                    }
+                                                    return (
+                                                      <span class="muted" title={text}>
+                                                        {text}
+                                                      </span>
+                                                    );
+                                                  }}
+                                                </For>
                                                 <Show when={colVisible("age")}>
                                                   <span class="muted">
                                                     {ageFromTimestamp(
@@ -2912,10 +3260,16 @@ function App() {
                                                   </button>
                                                 </Show>
                                                 <Show
-                                                  when={canFluxHelmReleaseAction(
-                                                    store.selectedKind().kind,
-                                                    store.selectedKind().apiVersion,
-                                                  )}
+                                                  when={
+                                                    canFluxSuspend(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    ) ||
+                                                    canFluxHelmReleaseAction(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    )
+                                                  }
                                                 >
                                                   <Show when={!isFluxHelmReleaseSuspended(obj())}>
                                                     <button
@@ -2941,6 +3295,19 @@ function App() {
                                                       Resume
                                                     </button>
                                                   </Show>
+                                                </Show>
+                                                <Show
+                                                  when={
+                                                    canFluxAction(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    ) ||
+                                                    canFluxHelmReleaseAction(
+                                                      store.selectedKind().kind,
+                                                      store.selectedKind().apiVersion,
+                                                    )
+                                                  }
+                                                >
                                                   <button
                                                     class="btn"
                                                     onClick={() =>
@@ -2950,6 +3317,31 @@ function App() {
                                                     }
                                                   >
                                                     Reconcile
+                                                  </button>
+                                                </Show>
+                                                <Show
+                                                  when={canArgoRefresh(
+                                                    store.selectedKind().kind,
+                                                    store.selectedKind().apiVersion,
+                                                  )}
+                                                >
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() =>
+                                                      void runArgoAction("refresh", [
+                                                        objectKey(obj()),
+                                                      ])
+                                                    }
+                                                  >
+                                                    Refresh
+                                                  </button>
+                                                  <button
+                                                    class="btn"
+                                                    onClick={() =>
+                                                      void runArgoAction("sync", [objectKey(obj())])
+                                                    }
+                                                  >
+                                                    Sync
                                                   </button>
                                                 </Show>
                                                 <Show
@@ -3076,6 +3468,28 @@ function App() {
                                                       metrics={podMetricsFor(
                                                         obj() as unknown as Record<string, unknown>,
                                                       )}
+                                                    />
+                                                  </Show>
+                                                  <Show
+                                                    when={Boolean(
+                                                      findKindView(
+                                                        store.selectedKind().kind,
+                                                        store.selectedKind().apiVersion,
+                                                      ),
+                                                    )}
+                                                  >
+                                                    <CrdDetailPanel
+                                                      context={store.selectedContext()}
+                                                      apiVersion={store.selectedKind().apiVersion}
+                                                      kind={store.selectedKind().kind}
+                                                      obj={obj()}
+                                                      discovered={
+                                                        store.apiResources[
+                                                          store.selectedContext()
+                                                        ] || []
+                                                      }
+                                                      allObjects={[]}
+                                                      openRelation={openRelation}
                                                     />
                                                   </Show>
                                                   <dl class="kv">
@@ -3649,10 +4063,13 @@ function App() {
                   </button>
                 </Show>
                 <Show
-                  when={canFluxHelmReleaseAction(
-                    store.selectedKind().kind,
-                    store.selectedKind().apiVersion,
-                  )}
+                  when={
+                    canFluxSuspend(store.selectedKind().kind, store.selectedKind().apiVersion) ||
+                    canFluxHelmReleaseAction(
+                      store.selectedKind().kind,
+                      store.selectedKind().apiVersion,
+                    )
+                  }
                 >
                   <button
                     class="ctx-item"
@@ -3666,11 +4083,34 @@ function App() {
                   >
                     Resume
                   </button>
+                </Show>
+                <Show
+                  when={
+                    canFluxAction(store.selectedKind().kind, store.selectedKind().apiVersion) ||
+                    canFluxHelmReleaseAction(
+                      store.selectedKind().kind,
+                      store.selectedKind().apiVersion,
+                    )
+                  }
+                >
                   <button
                     class="ctx-item"
                     onClick={() => void runFluxHelmReleaseAction("reconcile", menu().keys)}
                   >
                     Reconcile
+                  </button>
+                </Show>
+                <Show
+                  when={canArgoRefresh(store.selectedKind().kind, store.selectedKind().apiVersion)}
+                >
+                  <button
+                    class="ctx-item"
+                    onClick={() => void runArgoAction("refresh", menu().keys)}
+                  >
+                    Refresh
+                  </button>
+                  <button class="ctx-item" onClick={() => void runArgoAction("sync", menu().keys)}>
+                    Sync
                   </button>
                 </Show>
                 <Show when={menu().keys.length === 1 && canScaleKind(store.selectedKind().kind)}>

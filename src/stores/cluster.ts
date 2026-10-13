@@ -10,6 +10,7 @@ import {
   isPseudoKind,
   kindIsClusterScoped,
   objectKey,
+  ROUTING_GRAPH_KIND_CANDIDATES,
   resourceIsListable,
   resourceIsWatchable,
 } from "../constants/resources";
@@ -36,6 +37,7 @@ import {
 } from "../utils/namespaceName";
 import { countedPodNodeName, nodeStatusText } from "../utils/nodeStatus";
 import { matchesLabelSelector, matchesOwnerFilter } from "../utils/relations";
+import { preferApiVersion } from "../views/helpers";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 
@@ -686,6 +688,21 @@ function createClusterStore() {
     }
   }
 
+  function routingGraphKinds(): GraphKindSpec[] {
+    const discovered = apiResources[selectedContext()] || [];
+    const out: GraphKindSpec[] = [];
+    for (const cand of ROUTING_GRAPH_KIND_CANDIDATES) {
+      const apiVersion = preferApiVersion(discovered, cand.kind, cand.apiGroup, cand.prefer);
+      if (!apiVersion) continue;
+      out.push({ kind: cand.kind, apiVersion, visible: cand.visible });
+    }
+    return out;
+  }
+
+  function allGraphKindSpecs(): GraphKindSpec[] {
+    return [...GRAPH_KINDS, ...routingGraphKinds()];
+  }
+
   async function startGraphWatches(namespace: string) {
     const ctx = selectedContext();
     if (!ctx || !namespace || namespace === "*") return;
@@ -696,10 +713,11 @@ function createClusterStore() {
     setGraphLoading(true);
 
     const started: Record<string, string> = {};
+    const routing = routingGraphKinds();
 
     // Wave 1: workloads + networking — paint as soon as these are listed.
     await Promise.all(
-      GRAPH_KINDS_WAVE1.map((spec) =>
+      [...GRAPH_KINDS_WAVE1, ...routing].map((spec) =>
         listAndWatchGraphKind(ctx, namespace, spec, started, generation),
       ),
     );
@@ -722,7 +740,7 @@ function createClusterStore() {
     const ns = visualizeNamespace();
     if (!ctx || !ns) return [];
     const all: K8sObject[] = [];
-    for (const { apiVersion, kind } of GRAPH_KINDS) {
+    for (const { apiVersion, kind } of allGraphKindSpecs()) {
       const bucket = resources[bucketKey(ctx, apiVersion, kind, ns)];
       if (!bucket) continue;
       for (const uid of bucket.order) {

@@ -151,7 +151,13 @@ export function isPseudoKind(kind: string): boolean {
 }
 
 /** Kinds watched for the namespace relationship graph (KubeView parity). */
-export const GRAPH_KINDS = [
+export type GraphKindSpec = {
+  kind: string;
+  apiVersion: string;
+  visible: boolean;
+};
+
+export const GRAPH_KINDS: GraphKindSpec[] = [
   { kind: "Pod", apiVersion: "v1", visible: true },
   { kind: "Deployment", apiVersion: "apps/v1", visible: true },
   { kind: "ReplicaSet", apiVersion: "apps/v1", visible: true },
@@ -171,9 +177,31 @@ export const GRAPH_KINDS = [
     apiVersion: "autoscaling/v2",
     visible: true,
   },
-] as const;
+];
 
-export type GraphKindSpec = (typeof GRAPH_KINDS)[number];
+/** Optional routing CRDs watched for the namespace graph when discovered. */
+export const ROUTING_GRAPH_KIND_CANDIDATES: {
+  kind: string;
+  apiGroup: string;
+  prefer: string[];
+  visible: boolean;
+}[] = [
+  { kind: "IngressRoute", apiGroup: "traefik.io", prefer: ["v1alpha1"], visible: true },
+  { kind: "Middleware", apiGroup: "traefik.io", prefer: ["v1alpha1"], visible: true },
+  { kind: "TraefikService", apiGroup: "traefik.io", prefer: ["v1alpha1"], visible: true },
+  {
+    kind: "HTTPRoute",
+    apiGroup: "gateway.networking.k8s.io",
+    prefer: ["v1", "v1beta1"],
+    visible: true,
+  },
+  {
+    kind: "Gateway",
+    apiGroup: "gateway.networking.k8s.io",
+    prefer: ["v1", "v1beta1"],
+    visible: true,
+  },
+];
 
 /** Second wave: bulky / link-only kinds loaded after first paint. */
 const GRAPH_WAVE2_KINDS = new Set(["ConfigMap", "Secret", "Endpoints", "EndpointSlice"]);
@@ -184,7 +212,10 @@ export const GRAPH_KINDS_WAVE1 = GRAPH_KINDS.filter((k) => !GRAPH_WAVE2_KINDS.ha
 /** ConfigMaps, Secrets, Endpoints — deferred until the map is visible. */
 export const GRAPH_KINDS_WAVE2 = GRAPH_KINDS.filter((k) => GRAPH_WAVE2_KINDS.has(k.kind));
 
-export const GRAPH_VISIBLE_KINDS = GRAPH_KINDS.filter((k) => k.visible).map((k) => k.kind);
+export const GRAPH_VISIBLE_KINDS = [
+  ...GRAPH_KINDS.filter((k) => k.visible).map((k) => k.kind),
+  ...ROUTING_GRAPH_KIND_CANDIDATES.filter((k) => k.visible).map((k) => k.kind),
+];
 
 const CLUSTER_SCOPED_KINDS = new Set([
   "Node",
@@ -224,12 +255,13 @@ const STATUS_COLUMN_KINDS = new Set([
   "Node",
 ]);
 
-/** Status column for core kinds above, plus Longhorn Node/Volume. */
+/** Status column for core kinds above, plus Longhorn Node/Volume and registered CRD views. */
 export function kindHasStatusColumn(kind: string, apiVersion?: string | null): boolean {
   if (STATUS_COLUMN_KINDS.has(kind)) return true;
   if (kind === "Volume" && (apiVersion || "").startsWith("longhorn.io/")) {
     return true;
   }
+  // Lazy import avoided — registry consulted from App via kindViewHasStatusColumn.
   return false;
 }
 
