@@ -44,20 +44,12 @@ export function objectConditions(obj: Record<string, unknown> | null | undefined
   return out;
 }
 
-export function findCondition(
-  obj: Record<string, unknown> | null | undefined,
-  type: string,
-): ConditionInfo | null {
-  const want = type.toLowerCase();
-  return objectConditions(obj).find((c) => c.type.toLowerCase() === want) ?? null;
-}
-
-export function conditionIsTrue(c: ConditionInfo | null | undefined): boolean {
+function conditionIsTrue(c: ConditionInfo | null | undefined): boolean {
   return (c?.status || "").toLowerCase() === "true";
 }
 
 /** Prefer Ready, then Synced / Healthy / Available. */
-export function primaryCondition(
+function primaryCondition(
   obj: Record<string, unknown> | null | undefined,
   preferred: string[] = ["Ready", "Synced", "Healthy", "Available"],
 ): ConditionInfo | null {
@@ -90,12 +82,4 @@ export function readyConditionLabel(
   if (!c) return { text: "—", tone: "muted" };
   const text = c.reason || (conditionIsTrue(c) ? c.type : `Not ${c.type}`);
   return { text, tone: conditionTone(c) };
-}
-
-export function asObjRecord(v: unknown): Record<string, unknown> | null {
-  return asRecord(v);
-}
-
-export function asString(v: unknown): string {
-  return str(v);
 }

@@ -301,15 +301,3 @@ export const routingFamily: CrdFamily = {
   clusterHas: (discovered) =>
     clusterHasApiGroup(discovered, TRAEFIK) || clusterHasApiGroup(discovered, GATEWAY),
 };
-
-export function clusterHasTraefik(
-  discovered: { group?: string; apiVersion?: string }[] | undefined | null,
-): boolean {
-  return clusterHasApiGroup(discovered, TRAEFIK);
-}
-
-export function clusterHasGatewayApi(
-  discovered: { group?: string; apiVersion?: string }[] | undefined | null,
-): boolean {
-  return clusterHasApiGroup(discovered, GATEWAY);
-}

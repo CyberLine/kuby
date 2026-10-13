@@ -43,10 +43,8 @@ export function nodeStatusLabels(obj: Record<string, unknown>): StatusLabel[] {
     labels.push({ text: "Ready", tone: "ok" });
   } else if (ready?.status === "False") {
     labels.push({ text: "NotReady", tone: "err" });
-  } else if (ready?.status === "Unknown") {
-    labels.push({ text: "Unknown", tone: "warn" });
   } else {
-    labels.push({ text: "Unknown", tone: "muted" });
+    labels.push({ text: "Unknown", tone: "err" });
   }
 
   for (const c of conditions) {

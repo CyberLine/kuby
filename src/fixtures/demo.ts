@@ -78,6 +78,15 @@ export function demoWorkloadOverview(context: string): WorkloadOverview {
   return {
     cards: [
       {
+        kind: "Nodes",
+        total: 12,
+        segments: [
+          { label: "Ready", count: 10, tone: "ok" },
+          { label: "SchedulingDisabled", count: 1, tone: "warn" },
+          { label: "NotReady", count: 1, tone: "err" },
+        ],
+      },
+      {
         kind: "Pods",
         total: 248,
         segments: [

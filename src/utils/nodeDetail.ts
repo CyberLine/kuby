@@ -126,8 +126,7 @@ export function conditionTone(c: NodeCondition): StatusLabel["tone"] {
     c.type === "NetworkUnavailable";
   if (c.type === "Ready") {
     if (c.status === "True") return "ok";
-    if (c.status === "False") return "err";
-    return "warn";
+    return "err";
   }
   if (pressure) {
     return c.status === "True" ? "warn" : "ok";

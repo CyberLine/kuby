@@ -169,6 +169,7 @@ import {
 import "./App.css";
 
 const OVERVIEW_KIND_MAP: Record<string, { apiVersion: string; kind: string }> = {
+  Nodes: { apiVersion: "v1", kind: "Node" },
   Pods: { apiVersion: "v1", kind: "Pod" },
   Deployments: { apiVersion: "apps/v1", kind: "Deployment" },
   ReplicaSets: { apiVersion: "apps/v1", kind: "ReplicaSet" },

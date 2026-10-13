@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use k8s_openapi::api::apps::v1::{Deployment, ReplicaSet};
 use k8s_openapi::api::batch::v1::CronJob;
-use k8s_openapi::api::core::v1::{Event, Pod, ResourceQuota};
+use k8s_openapi::api::core::v1::{Event, Node, Pod, ResourceQuota};
 use k8s_openapi::api::policy::v1::PodDisruptionBudget;
 use kube::api::{Api, ListParams, ResourceExt};
 use serde::{Deserialize, Serialize};
@@ -104,6 +104,10 @@ pub async fn get_workload_overview(
     let mut quotas: Vec<ResourceQuota> = Vec::new();
     let mut pdbs: Vec<PodDisruptionBudget> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
+    let mut nodes: Vec<Node> = Vec::new();
+
+    // Nodes are cluster-scoped — list once, independent of namespace filter.
+    extend_list(&mut nodes, list_cluster::<Node>(client.clone()).await);
 
     for ns in &ns_list {
         let all = ns == "*";
@@ -133,6 +137,7 @@ pub async fn get_workload_overview(
     }
 
     let cards = vec![
+        node_card(&nodes),
         pod_card(&pods),
         workload_card("Deployments", &deployments),
         replicaset_card(&replicasets),
@@ -180,6 +185,18 @@ where
     Ok(api.list(&ListParams::default()).await?.items)
 }
 
+async fn list_cluster<K>(client: kube::Client) -> std::result::Result<Vec<K>, kube::Error>
+where
+    K: kube::Resource<Scope = kube::core::ClusterResourceScope>
+        + Clone
+        + serde::de::DeserializeOwned
+        + std::fmt::Debug,
+    <K as kube::Resource>::DynamicType: Default,
+{
+    let api: Api<K> = Api::all(client);
+    Ok(api.list(&ListParams::default()).await?.items)
+}
+
 fn extend_list<T>(target: &mut Vec<T>, result: std::result::Result<Vec<T>, kube::Error>) {
     match result {
         Ok(items) => target.extend(items),
@@ -201,6 +218,61 @@ fn segments_from(map: HashMap<String, (u32, String)>) -> Vec<OverviewSegment> {
         .collect();
     segs.sort_by(|a, b| b.count.cmp(&a.count).then(a.label.cmp(&b.label)));
     segs
+}
+
+/// Primary status for overview segments (mirrors `nodeStatusLabels` priority).
+fn node_status_label(node: &Node) -> (&'static str, &'static str) {
+    let conditions = node
+        .status
+        .as_ref()
+        .and_then(|s| s.conditions.as_ref())
+        .map(|c| c.as_slice())
+        .unwrap_or(&[]);
+
+    let ready = conditions.iter().find(|c| c.type_ == "Ready");
+    match ready.map(|c| c.status.as_str()) {
+        Some("True") => {}
+        Some("False") => return ("NotReady", "err"),
+        _ => return ("Unknown", "err"),
+    }
+
+    for pressure in [
+        "MemoryPressure",
+        "DiskPressure",
+        "PIDPressure",
+        "NetworkUnavailable",
+    ] {
+        if conditions
+            .iter()
+            .any(|c| c.type_ == pressure && c.status == "True")
+        {
+            return (pressure, "warn");
+        }
+    }
+
+    if node
+        .spec
+        .as_ref()
+        .and_then(|s| s.unschedulable)
+        .unwrap_or(false)
+    {
+        return ("SchedulingDisabled", "warn");
+    }
+
+    ("Ready", "ok")
+}
+
+fn node_card(nodes: &[Node]) -> OverviewCard {
+    let mut map = HashMap::new();
+    for node in nodes {
+        let (label, tone) = node_status_label(node);
+        bump(&mut map, label, tone);
+    }
+    OverviewCard {
+        kind: "Nodes".into(),
+        total: nodes.len() as u32,
+        segments: segments_from(map),
+    }
 }
 
 fn pod_card(pods: &[Pod]) -> OverviewCard {

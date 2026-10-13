@@ -103,4 +103,4 @@ function clusterHasKind(
   );
 }
 
-export type { CrdDetailContext, CrdNavItem, KindViewDef } from "./types";
+export type { CrdNavItem, KindViewDef } from "./types";
