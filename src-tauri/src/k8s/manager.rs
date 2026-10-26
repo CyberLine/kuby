@@ -13,9 +13,10 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::error::{KubyError, Result};
+use crate::error::{kube_is_forbidden, KubyError, Result};
 use crate::k8s::auth::{describe_auth, AuthSummary};
 use crate::k8s::discovery::DiscoveryCache;
+use crate::k8s::namespaces::{self, NamespaceIndex};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -54,6 +55,8 @@ struct ClusterHandle {
 pub struct ClusterManager {
     inner: RwLock<HashMap<String, ClusterHandle>>,
     active: RwLock<Vec<String>>,
+    /// Active vs terminating namespace names, filled by namespace list.
+    namespace_index: RwLock<HashMap<String, NamespaceIndex>>,
 }
 
 impl ClusterManager {
@@ -61,6 +64,7 @@ impl ClusterManager {
         Self {
             inner: RwLock::new(HashMap::new()),
             active: RwLock::new(Vec::new()),
+            namespace_index: RwLock::new(HashMap::new()),
         }
     }
 
@@ -214,7 +218,35 @@ impl ClusterManager {
             }
         }
         self.active.write().retain(|c| c != context);
+        self.namespace_index.write().remove(context);
         Ok(())
+    }
+
+    pub fn set_namespace_index(&self, context: &str, index: NamespaceIndex) {
+        self.namespace_index
+            .write()
+            .insert(context.to_string(), index);
+    }
+
+    pub fn namespace_index(&self, context: &str) -> Option<NamespaceIndex> {
+        self.namespace_index.read().get(context).cloned()
+    }
+
+    /// Cached namespace split, or a fresh list. Forbidden LIST yields an empty index
+    /// so callers keep their previous (usually namespaced) behavior.
+    pub async fn namespace_index_or_load(&self, context: &str) -> Result<NamespaceIndex> {
+        if let Some(index) = self.namespace_index(context) {
+            return Ok(index);
+        }
+        let client = self.client(context)?;
+        match namespaces::load_index(client).await {
+            Ok(index) => {
+                self.set_namespace_index(context, index.clone());
+                Ok(index)
+            }
+            Err(KubyError::Kube(err)) if kube_is_forbidden(&err) => Ok(NamespaceIndex::default()),
+            Err(err) => Err(err),
+        }
     }
 
     pub fn active_contexts(&self) -> Vec<String> {

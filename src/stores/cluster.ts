@@ -40,6 +40,27 @@ import { matchesLabelSelector, matchesOwnerFilter } from "../utils/relations";
 import { preferApiVersion } from "../views/helpers";
 
 const CONNECT_TIMEOUT_MS = 30_000;
+/** Parallel namespace reads. High enough to stay responsive, low enough not to stall the API. */
+const NAMESPACE_QUERY_CONCURRENCY = 6;
+
+async function mapPool<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  if (!items.length) return;
+  let cursor = 0;
+  const workers = Math.min(limit, items.length);
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      for (;;) {
+        const index = cursor++;
+        if (index >= items.length) return;
+        await fn(items[index]);
+      }
+    }),
+  );
+}
 
 export type ResourceBucket = {
   byUid: Record<string, K8sObject>;
@@ -230,6 +251,9 @@ function createClusterStore() {
   const [selectedContext, setSelectedContext] = createSignal<string>("");
   const [statuses, setStatuses] = createStore<Record<string, ClusterStatus>>({});
   const [namespaces, setNamespaces] = createStore<Record<string, string[]>>({});
+  const [terminatingNamespaces, setTerminatingNamespaces] = createStore<Record<string, string[]>>(
+    {},
+  );
   const [selectedNamespaces, setSelectedNamespaces] = createStore<Record<string, string[]>>({});
   const [namespaceAccess, setNamespaceAccess] = createStore<Record<string, NamespaceAccess>>({});
   const [extraNamespaces, setExtraNamespaces] = createStore<Record<string, string[]>>({});
@@ -288,9 +312,26 @@ function createClusterStore() {
     return kindIsClusterScoped(kind);
   }
 
+  function terminatingSet(ctx: string): Set<string> {
+    return new Set(terminatingNamespaces[ctx] || []);
+  }
+
+  /** Namespaces that are safe to list or watch. Terminating ones are omitted. */
+  function activeNamespaceNames(ctx: string): string[] {
+    const terminating = terminatingSet(ctx);
+    return (namespaces[ctx] || []).filter((n) => n && n !== "*" && !terminating.has(n));
+  }
+
   function namespacesToWatch(ctx: string, kind: string, apiVersion: string): string[] {
     if (isClusterScopedKind(ctx, kind, apiVersion)) return ["*"];
-    return selectedNamespaces[ctx] || ["default"];
+    const selected = (selectedNamespaces[ctx] || ["default"]).filter((n) => n);
+    const terminating = terminatingSet(ctx);
+    if (selected.includes("*")) {
+      // One cluster-wide watch is fine until a namespace is stuck Terminating.
+      if (terminating.size === 0) return ["*"];
+      return activeNamespaceNames(ctx);
+    }
+    return selected.filter((n) => n !== "*" && !terminating.has(n));
   }
 
   async function ensureWatchListener() {
@@ -497,8 +538,17 @@ function createClusterStore() {
 
   function applyNamespaceResult(context: string, result: NamespaceListResult) {
     const extras = loadExtraNamespaces(context);
+    const terminating = result.terminating || [];
+    const termSet = new Set(terminating);
+    setTerminatingNamespaces(context, terminating);
     setExtraNamespaces(context, extras);
-    setNamespaces(context, uniqueSorted([...result.namespaces, ...extras]));
+    setNamespaces(
+      context,
+      uniqueSorted([
+        ...result.namespaces.filter((n) => !termSet.has(n)),
+        ...extras.filter((n) => !termSet.has(n)),
+      ]),
+    );
     setNamespaceAccess(context, {
       restricted: result.restricted,
       defaultNamespace: result.defaultNamespace || "default",
@@ -706,6 +756,7 @@ function createClusterStore() {
   async function startGraphWatches(namespace: string) {
     const ctx = selectedContext();
     if (!ctx || !namespace || namespace === "*") return;
+    if (terminatingSet(ctx).has(namespace)) return;
     await ensureWatchListener();
     await stopGraphWatches();
     const generation = graphWatchGeneration;
@@ -796,20 +847,25 @@ function createClusterStore() {
   async function syncNodePodSidecars(ctx: string) {
     const access = namespaceAccess[ctx];
     const selected = (selectedNamespaces[ctx] || []).filter((n) => n && n !== "*");
+    const wantsAll = (selectedNamespaces[ctx] || []).includes("*");
+    const terminating = terminatingSet(ctx);
     const desired = new Set<string>();
+    let targets: (string | null)[] = [];
 
-    if (!access?.restricted) {
+    if (!access?.restricted && terminating.size === 0) {
       const ok = await startNodePodWatch(ctx, null);
       if (ok) desired.add(bucketKey(ctx, "v1", "Pod", "*"));
-      else {
-        for (const ns of selected) {
-          if (await startNodePodWatch(ctx, ns)) desired.add(bucketKey(ctx, "v1", "Pod", ns));
-        }
-      }
+      else targets = selected;
+    } else if (!access?.restricted && wantsAll) {
+      targets = activeNamespaceNames(ctx);
     } else {
-      for (const ns of selected) {
+      targets = selected.filter((n) => !terminating.has(n));
+    }
+
+    if (targets.length) {
+      await mapPool(targets, NAMESPACE_QUERY_CONCURRENCY, async (ns) => {
         if (await startNodePodWatch(ctx, ns)) desired.add(bucketKey(ctx, "v1", "Pod", ns));
-      }
+      });
     }
 
     for (const [bucket, watchKey] of Object.entries({ ...nodePodSidecarKeys })) {
@@ -893,65 +949,63 @@ function createClusterStore() {
 
     pendingListBuckets = new Set(nss.map((ns) => bucketKey(ctx, apiVersion, kind, ns)));
 
-    await Promise.all(
-      nss.map(async (ns) => {
-        if (generation !== listWatchGeneration) return;
-        const key = bucketKey(ctx, apiVersion, kind, ns);
-        const namespace = ns === "*" ? null : ns;
+    await mapPool(nss, NAMESPACE_QUERY_CONCURRENCY, async (ns) => {
+      if (generation !== listWatchGeneration) return;
+      const key = bucketKey(ctx, apiVersion, kind, ns);
+      const namespace = ns === "*" ? null : ns;
+      try {
         try {
-          try {
-            const listed = await api.listResourcesOnce(ctx, apiVersion, kind, namespace);
-            if (generation !== listWatchGeneration) return;
-            ingestListed(key, listed, kind, apiVersion);
-            markListBucketReady(key);
-          } catch (listErr) {
-            if (generation !== listWatchGeneration) return;
-            setResources(key, { byUid: {}, order: [] });
-            if (!canWatch) {
-              markListBucketReady(key);
-              setError(
-                formatWatchError({
-                  context: ctx,
-                  apiVersion,
-                  kind,
-                  namespace,
-                  error: String(listErr),
-                }),
-              );
-              return;
-            }
-            console.warn("listResourcesOnce failed, waiting for watch", key, listErr);
-          }
-
+          const listed = await api.listResourcesOnce(ctx, apiVersion, kind, namespace);
           if (generation !== listWatchGeneration) return;
-          if (!canWatch) return;
-
-          const watchKey = await api.startResourceWatch(ctx, apiVersion, kind, namespace);
-          if (generation !== listWatchGeneration) {
-            try {
-              await api.stopResourceWatch(ctx, watchKey);
-            } catch {
-              /* superseded */
-            }
+          ingestListed(key, listed, kind, apiVersion);
+          markListBucketReady(key);
+        } catch (listErr) {
+          if (generation !== listWatchGeneration) return;
+          setResources(key, { byUid: {}, order: [] });
+          if (!canWatch) {
+            markListBucketReady(key);
+            setError(
+              formatWatchError({
+                context: ctx,
+                apiVersion,
+                kind,
+                namespace,
+                error: String(listErr),
+              }),
+            );
             return;
           }
-          setWatchKeys(key, watchKey);
-        } catch (e) {
-          if (generation !== listWatchGeneration) return;
-          markListBucketReady(key);
-          if (shouldSuppressWatchError(String(e))) return;
-          setError(
-            formatWatchError({
-              context: ctx,
-              apiVersion,
-              kind,
-              namespace,
-              error: String(e),
-            }),
-          );
+          console.warn("listResourcesOnce failed, waiting for watch", key, listErr);
         }
-      }),
-    );
+
+        if (generation !== listWatchGeneration) return;
+        if (!canWatch) return;
+
+        const watchKey = await api.startResourceWatch(ctx, apiVersion, kind, namespace);
+        if (generation !== listWatchGeneration) {
+          try {
+            await api.stopResourceWatch(ctx, watchKey);
+          } catch {
+            /* superseded */
+          }
+          return;
+        }
+        setWatchKeys(key, watchKey);
+      } catch (e) {
+        if (generation !== listWatchGeneration) return;
+        markListBucketReady(key);
+        if (shouldSuppressWatchError(String(e))) return;
+        setError(
+          formatWatchError({
+            context: ctx,
+            apiVersion,
+            kind,
+            namespace,
+            error: String(e),
+          }),
+        );
+      }
+    });
 
     if (generation === listWatchGeneration && pendingListBuckets.size === 0) {
       setListLoading(false);
@@ -988,8 +1042,10 @@ function createClusterStore() {
       }
     }
 
-    await Promise.all(
-      targets.map(async ({ apiVersion: av, kind: k, namespace }) => {
+    await mapPool(
+      targets,
+      NAMESPACE_QUERY_CONCURRENCY,
+      async ({ apiVersion: av, kind: k, namespace }) => {
         const key = bucketKey(ctx, av, k, namespace);
         try {
           const listed = await api.listResourcesOnce(ctx, av, k, namespace);
@@ -999,7 +1055,7 @@ function createClusterStore() {
         } catch (e) {
           console.warn("refreshCurrent failed", key, e);
         }
-      }),
+      },
     );
   }
 
@@ -1135,6 +1191,11 @@ function createClusterStore() {
     setSearchQuery("");
   }
 
+  function isTerminatingNamespace(context: string, name: string): boolean {
+    if (!context || !name) return false;
+    return terminatingSet(context).has(name);
+  }
+
   function isSyntheticNamespace(obj: K8sObject | null | undefined): boolean {
     if (!obj) return false;
     return String(obj.uid || obj.metadata?.uid || "").startsWith("restricted-ns:");
@@ -1147,6 +1208,7 @@ function createClusterStore() {
     setSelectedContext,
     statuses,
     namespaces,
+    isTerminatingNamespace,
     selectedNamespaces,
     setSelectedNamespaces: selectNamespaces,
     namespaceAccess,

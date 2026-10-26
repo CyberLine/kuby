@@ -8,6 +8,7 @@ use serde_json::json;
 use tokio::time::timeout;
 
 use crate::error::{kube_api_message, kube_is_forbidden, kube_is_not_found, Result};
+use crate::k8s::namespaces;
 use crate::k8s::ClusterManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +62,40 @@ pub async fn list_pod_metrics(
     namespace: Option<&str>,
 ) -> Result<Vec<PodMetrics>> {
     let client = manager.client(context)?;
+    let specific = namespace.filter(|ns| !ns.is_empty() && *ns != "*");
+    if let Some(ns) = specific {
+        if manager
+            .namespace_index(context)
+            .is_some_and(|idx| idx.is_terminating(ns))
+        {
+            return Ok(Vec::new());
+        }
+        return list_pod_metrics_in(client, Some(ns)).await;
+    }
+    if let Some(index) = manager
+        .namespace_index(context)
+        .filter(|idx| idx.has_terminating())
+    {
+        let mut out = Vec::new();
+        for chunk in index.active.chunks(namespaces::BULK_CONCURRENCY) {
+            let parts = futures::future::join_all(chunk.iter().cloned().map(|ns| {
+                let client = client.clone();
+                async move { list_pod_metrics_in(client, Some(&ns)).await }
+            }))
+            .await;
+            for part in parts {
+                out.extend(part.unwrap_or_default());
+            }
+        }
+        return Ok(out);
+    }
+    list_pod_metrics_in(client, None).await
+}
+
+async fn list_pod_metrics_in(
+    client: kube::Client,
+    namespace: Option<&str>,
+) -> Result<Vec<PodMetrics>> {
     let api = pod_metrics_api(client, namespace);
     let list = match api.list(&ListParams::default()).await {
         Ok(list) => list,

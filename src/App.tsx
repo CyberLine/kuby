@@ -999,8 +999,24 @@ function App() {
     });
   }
 
+  function namespaceIsTerminating(obj: Record<string, unknown>): boolean {
+    const meta = obj.metadata as { deletionTimestamp?: string; name?: string } | undefined;
+    if (meta?.deletionTimestamp) return true;
+    const phase = (obj.status as { phase?: string } | undefined)?.phase;
+    if (phase === "Terminating") return true;
+    const name = meta?.name || (typeof obj.name === "string" ? obj.name : "");
+    return store.isTerminatingNamespace(store.selectedContext(), name);
+  }
+
+  function canVisualizeSelection(keys: string[]): boolean {
+    if (store.selectedKind().kind !== "Namespace" || keys.length !== 1) return false;
+    const obj = objects().find((item) => objectKey(item) === keys[0]);
+    return Boolean(obj) && !namespaceIsTerminating(obj as Record<string, unknown>);
+  }
+
   async function openVisualize(namespace: string) {
     if (!namespace || namespace === "*") return;
+    if (store.isTerminatingNamespace(store.selectedContext(), namespace)) return;
     pushCurrent();
     setCtxMenu(null);
     setViewingNodeName(null);
@@ -2955,7 +2971,8 @@ function App() {
                                                     <span class="name-text">{name}</span>
                                                     <Show
                                                       when={
-                                                        store.selectedKind().kind === "Namespace"
+                                                        store.selectedKind().kind === "Namespace" &&
+                                                        !namespaceIsTerminating(obj)
                                                       }
                                                     >
                                                       <button
@@ -4016,14 +4033,14 @@ function App() {
                 onContextMenu={(e) => e.preventDefault()}
               >
                 <div class="ctx-menu-label">{menu().keys.length} selected</div>
-                <Show when={store.selectedKind().kind === "Namespace" && menu().keys.length === 1}>
+                <Show when={canVisualizeSelection(menu().keys)}>
                   <button
                     class="ctx-item"
                     onClick={() => {
                       const key = menu().keys[0];
                       const obj = objects().find((o) => objectKey(o) === key);
                       const name = obj ? objectName(obj) : "";
-                      if (name) void openVisualize(name);
+                      if (name && obj && !namespaceIsTerminating(obj)) void openVisualize(name);
                       else setCtxMenu(null);
                     }}
                   >

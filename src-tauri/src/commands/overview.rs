@@ -10,6 +10,7 @@ use tauri::State;
 
 use crate::error::Result;
 use crate::k8s::metrics;
+use crate::k8s::namespaces::{self, NamespaceScope};
 use crate::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,53 +89,27 @@ pub async fn get_workload_overview(
     usage_threshold: Option<f64>,
 ) -> Result<WorkloadOverview> {
     let threshold = usage_threshold.unwrap_or(0.95);
-    let fetch_all = namespaces.is_empty() || namespaces.iter().any(|n| n == "*");
-    let ns_list: Vec<String> = if fetch_all {
-        vec!["*".into()]
-    } else {
-        namespaces
-    };
-
     let client = state.manager.client(&context)?;
-
-    let mut pods: Vec<Pod> = Vec::new();
-    let mut deployments: Vec<Deployment> = Vec::new();
-    let mut replicasets: Vec<ReplicaSet> = Vec::new();
-    let mut cronjobs: Vec<CronJob> = Vec::new();
-    let mut quotas: Vec<ResourceQuota> = Vec::new();
-    let mut pdbs: Vec<PodDisruptionBudget> = Vec::new();
-    let mut events: Vec<Event> = Vec::new();
-    let mut nodes: Vec<Node> = Vec::new();
+    let index = state
+        .manager
+        .namespace_index_or_load(&context)
+        .await
+        .unwrap_or_default();
+    let scope = namespaces::resolve_scope(&index, &namespaces);
 
     // Nodes are cluster-scoped — list once, independent of namespace filter.
+    let mut nodes: Vec<Node> = Vec::new();
     extend_list(&mut nodes, list_cluster::<Node>(client.clone()).await);
 
-    for ns in &ns_list {
-        let all = ns == "*";
-        // Best-effort: one failing resource type must not blank the whole overview.
-        extend_list(&mut pods, list_ns::<Pod>(client.clone(), all, ns).await);
-        extend_list(
-            &mut deployments,
-            list_ns::<Deployment>(client.clone(), all, ns).await,
-        );
-        extend_list(
-            &mut replicasets,
-            list_ns::<ReplicaSet>(client.clone(), all, ns).await,
-        );
-        extend_list(
-            &mut cronjobs,
-            list_ns::<CronJob>(client.clone(), all, ns).await,
-        );
-        extend_list(
-            &mut quotas,
-            list_ns::<ResourceQuota>(client.clone(), all, ns).await,
-        );
-        extend_list(
-            &mut pdbs,
-            list_ns::<PodDisruptionBudget>(client.clone(), all, ns).await,
-        );
-        extend_list(&mut events, list_ns::<Event>(client.clone(), all, ns).await);
-    }
+    // Best-effort: one failing resource type must not blank the whole overview.
+    // Terminating namespaces are omitted so a large stuck set cannot stall the call.
+    let pods = collect_kind::<Pod>(client.clone(), &scope).await;
+    let deployments = collect_kind::<Deployment>(client.clone(), &scope).await;
+    let replicasets = collect_kind::<ReplicaSet>(client.clone(), &scope).await;
+    let cronjobs = collect_kind::<CronJob>(client.clone(), &scope).await;
+    let quotas = collect_kind::<ResourceQuota>(client.clone(), &scope).await;
+    let pdbs = collect_kind::<PodDisruptionBudget>(client.clone(), &scope).await;
+    let events = collect_kind::<Event>(client.clone(), &scope).await;
 
     let cards = vec![
         node_card(&nodes),
@@ -148,14 +123,11 @@ pub async fn get_workload_overview(
 
     let warnings = aggregate_warnings(&context, &events);
     let restarts = collect_restarts(&context, &pods);
-    let usage = collect_usage(
-        &state,
-        &context,
-        if fetch_all { None } else { Some(ns_list) },
-        &pods,
-        threshold,
-    )
-    .await;
+    let usage_namespaces = match &scope {
+        NamespaceScope::All => None,
+        NamespaceScope::Only(names) => Some(names.clone()),
+    };
+    let usage = collect_usage(&state, &context, usage_namespaces, &pods, threshold).await;
 
     Ok(WorkloadOverview {
         cards,
@@ -163,6 +135,38 @@ pub async fn get_workload_overview(
         restarts,
         usage,
     })
+}
+
+async fn collect_kind<K>(client: kube::Client, scope: &NamespaceScope) -> Vec<K>
+where
+    K: kube::Resource<Scope = kube::core::NamespaceResourceScope>
+        + Clone
+        + serde::de::DeserializeOwned
+        + std::fmt::Debug
+        + Send
+        + 'static,
+    <K as kube::Resource>::DynamicType: Default,
+{
+    match scope {
+        NamespaceScope::All => list_ns::<K>(client, true, "*").await.unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "overview list failed");
+            Vec::new()
+        }),
+        NamespaceScope::Only(names) => {
+            let mut out = Vec::new();
+            for chunk in names.chunks(namespaces::BULK_CONCURRENCY) {
+                let parts = futures::future::join_all(chunk.iter().cloned().map(|ns| {
+                    let client = client.clone();
+                    async move { list_ns::<K>(client, false, &ns).await }
+                }))
+                .await;
+                for part in parts {
+                    extend_list(&mut out, part);
+                }
+            }
+            out
+        }
+    }
 }
 
 async fn list_ns<K>(
@@ -602,8 +606,14 @@ async fn collect_usage(
     let mut out = Vec::new();
     let metrics_list = if let Some(nss) = namespaces {
         let mut all = Vec::new();
-        for ns in nss {
-            if let Ok(m) = metrics::list_pod_metrics(&state.manager, context, Some(&ns)).await {
+        for chunk in nss.chunks(namespaces::BULK_CONCURRENCY) {
+            let parts = futures::future::join_all(
+                chunk
+                    .iter()
+                    .map(|ns| metrics::list_pod_metrics(&state.manager, context, Some(ns))),
+            )
+            .await;
+            for m in parts.into_iter().flatten() {
                 all.extend(m);
             }
         }

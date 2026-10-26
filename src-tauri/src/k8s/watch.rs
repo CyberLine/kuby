@@ -67,6 +67,35 @@ pub async fn start_watch(
         )));
     }
 
+    let namespaced = cache
+        .resolve(&api_version, &kind)?
+        .map(|(_, namespaced)| namespaced)
+        .unwrap_or(true);
+    if namespaced {
+        if let Some(index) = manager.namespace_index(&context) {
+            let ns = namespace
+                .as_deref()
+                .filter(|ns| !ns.is_empty() && *ns != "*");
+            if ns.is_none() && index.has_terminating() {
+                // Cluster-wide watch would also read every Terminating namespace.
+                warn!(
+                    context,
+                    kind, "skipping cluster-wide watch while namespaces are terminating"
+                );
+                return Ok(key);
+            }
+            if ns.is_some_and(|ns| index.is_terminating(ns)) {
+                warn!(
+                    context,
+                    kind,
+                    namespace = ns.unwrap_or(""),
+                    "skipping watch in terminating namespace"
+                );
+                return Ok(key);
+            }
+        }
+    }
+
     let (api, _ar) = manager
         .resolve_api(&context, &api_version, &kind, namespace.as_deref())
         .await?;

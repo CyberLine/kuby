@@ -236,6 +236,7 @@ pub async fn get_list_columns(
     cache: &DiscoveryCache,
     api_version: &str,
     kind: &str,
+    namespace: Option<&str>,
 ) -> Result<Vec<PrinterColumn>> {
     let (ar, namespaced) = cache.resolve_or_err(api_version, kind)?;
     if let Some(cols) =
@@ -247,7 +248,7 @@ pub async fn get_list_columns(
         // CRD exists but has no additionalPrinterColumns — try Table defaults.
     }
 
-    let ns = list_namespace(namespaced, None);
+    let ns = list_namespace(namespaced, namespace);
     match fetch_table(client, &ar, ns, Some(1)).await {
         Ok(table) => Ok(table
             .column_definitions

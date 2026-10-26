@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::{kube_is_forbidden, kube_is_not_found, KubyError, Result};
+use crate::k8s::namespaces::{self, NamespaceScope};
 use crate::k8s::ClusterManager;
 
 const HELM_SECRET_TYPE: &str = "helm.sh/release.v1";
@@ -394,29 +395,45 @@ async fn list_helm_secrets(
     namespaces: &[String],
 ) -> Result<Vec<Secret>> {
     let client = manager.client(context)?;
-    let lp = ListParams::default().labels(HELM_OWNER_LABEL);
+    let index = manager
+        .namespace_index_or_load(context)
+        .await
+        .unwrap_or_default();
+    let scope = namespaces::resolve_scope(&index, namespaces);
 
-    let fetch_all = namespaces.is_empty() || namespaces.iter().any(|n| n.is_empty() || n == "*");
-
-    if fetch_all {
-        let api: Api<Secret> = Api::all(client);
-        return match api.list(&lp).await {
-            Ok(list) => Ok(list.items),
-            Err(err) if kube_is_forbidden(&err) || kube_is_not_found(&err) => Ok(Vec::new()),
-            Err(err) => Err(err.into()),
-        };
-    }
-
-    let mut all = Vec::new();
-    for ns in namespaces {
-        let api: Api<Secret> = Api::namespaced(client.clone(), ns);
-        match api.list(&lp).await {
-            Ok(list) => all.extend(list.items),
-            Err(err) if kube_is_forbidden(&err) || kube_is_not_found(&err) => {}
-            Err(err) => return Err(err.into()),
+    match scope {
+        NamespaceScope::All => list_helm_secrets_in(client, None).await,
+        NamespaceScope::Only(names) => {
+            let mut all = Vec::new();
+            for chunk in names.chunks(namespaces::BULK_CONCURRENCY) {
+                let parts = futures::future::join_all(chunk.iter().cloned().map(|ns| {
+                    let client = client.clone();
+                    async move { list_helm_secrets_in(client, Some(ns)).await }
+                }))
+                .await;
+                for part in parts {
+                    all.extend(part?);
+                }
+            }
+            Ok(all)
         }
     }
-    Ok(all)
+}
+
+async fn list_helm_secrets_in(
+    client: kube::Client,
+    namespace: Option<String>,
+) -> Result<Vec<Secret>> {
+    let lp = ListParams::default().labels(HELM_OWNER_LABEL);
+    let api: Api<Secret> = match namespace.as_deref() {
+        Some(ns) if !ns.is_empty() && ns != "*" => Api::namespaced(client, ns),
+        _ => Api::all(client),
+    };
+    match api.list(&lp).await {
+        Ok(list) => Ok(list.items),
+        Err(err) if kube_is_forbidden(&err) || kube_is_not_found(&err) => Ok(Vec::new()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn parse_secret(secret: &Secret) -> Option<ParsedRelease> {

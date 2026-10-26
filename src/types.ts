@@ -25,6 +25,8 @@ export interface ClusterStatus {
 
 export interface NamespaceListResult {
   namespaces: string[];
+  /** Namespaces stuck in Terminating. Bulk reads skip these. */
+  terminating?: string[];
   restricted: boolean;
   defaultNamespace: string;
 }

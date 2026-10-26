@@ -7,6 +7,7 @@ use tauri::{AppHandle, State};
 
 use crate::error::{kube_is_forbidden, kube_is_not_found, KubyError, Result};
 use crate::k8s::discovery::DiscoveredResource;
+use crate::k8s::namespaces::{self, NamespaceScope};
 use crate::k8s::printer_columns::{self, PrinterColumn, ResourceTable};
 use crate::k8s::watch;
 use crate::AppState;
@@ -14,7 +15,10 @@ use crate::AppState;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NamespaceListResult {
+    /// Namespaces that are not Terminating. Sidebar and bulk reads use this set.
     pub namespaces: Vec<String>,
+    /// Namespaces with phase Terminating or a deletion timestamp. Not queried in bulk.
+    pub terminating: Vec<String>,
     /// True when cluster-wide Namespace LIST is forbidden; names are a fallback seed.
     pub restricted: bool,
     pub default_namespace: String,
@@ -60,16 +64,20 @@ pub async fn list_namespaces(
     let api: Api<Namespace> = Api::all(client);
     match api.list(&ListParams::default()).await {
         Ok(list) => {
-            let mut names: Vec<_> = list.items.into_iter().map(|n| n.name_any()).collect();
-            names.sort();
+            let index = namespaces::index_from_items(list.items);
+            let terminating = index.terminating_list();
+            let active = index.active.clone();
+            state.manager.set_namespace_index(&context, index);
             Ok(NamespaceListResult {
-                namespaces: names,
+                namespaces: active,
+                terminating,
                 restricted: false,
                 default_namespace,
             })
         }
         Err(err) if kube_is_forbidden(&err) => Ok(NamespaceListResult {
             namespaces: vec![default_namespace.clone()],
+            terminating: Vec::new(),
             restricted: true,
             default_namespace,
         }),
@@ -289,9 +297,79 @@ pub async fn list_resources_once(
     kind: String,
     namespace: Option<String>,
 ) -> Result<Vec<serde_json::Value>> {
+    if resource_is_namespaced(&state, &context, &api_version, &kind).await? {
+        if let Some(scope) = bulk_scope(&state, &context, namespace.as_deref()) {
+            return list_namespaced_values(&state, &context, &api_version, &kind, scope).await;
+        }
+    }
+    list_one(&state, &context, &api_version, &kind, namespace.as_deref()).await
+}
+
+fn bulk_scope(state: &AppState, context: &str, namespace: Option<&str>) -> Option<NamespaceScope> {
+    let index = state.manager.namespace_index(context)?;
+    let scope = namespaces::resolve_scope(&index, &namespaces::requested_names(namespace));
+    // No terminating namespaces: keep the single cluster-wide call.
+    if !index.has_terminating() {
+        return None;
+    }
+    Some(scope)
+}
+
+/// Namespace to sample for a limit=1 table read. None keeps the cluster-wide call.
+fn sample_namespace(state: &AppState, context: &str) -> Option<String> {
+    let index = state.manager.namespace_index(context)?;
+    if !index.has_terminating() {
+        return None;
+    }
+    index.active.first().cloned()
+}
+
+async fn resource_is_namespaced(
+    state: &AppState,
+    context: &str,
+    api_version: &str,
+    kind: &str,
+) -> Result<bool> {
+    let cache = state.manager.discovery(context).await?;
+    Ok(cache
+        .resolve(api_version, kind)?
+        .map(|(_, namespaced)| namespaced)
+        .unwrap_or(true))
+}
+
+async fn list_namespaced_values(
+    state: &AppState,
+    context: &str,
+    api_version: &str,
+    kind: &str,
+    scope: NamespaceScope,
+) -> Result<Vec<serde_json::Value>> {
+    let NamespaceScope::Only(names) = scope else {
+        return list_one(state, context, api_version, kind, None).await;
+    };
+    let mut out = Vec::new();
+    for chunk in names.chunks(namespaces::BULK_CONCURRENCY) {
+        let parts = futures::future::join_all(chunk.iter().cloned().map(|ns| async move {
+            list_one(state, context, api_version, kind, Some(ns.as_str())).await
+        }))
+        .await;
+        for part in parts {
+            out.extend(part?);
+        }
+    }
+    Ok(out)
+}
+
+async fn list_one(
+    state: &AppState,
+    context: &str,
+    api_version: &str,
+    kind: &str,
+    namespace: Option<&str>,
+) -> Result<Vec<serde_json::Value>> {
     let (api, _) = state
         .manager
-        .resolve_api(&context, &api_version, &kind, namespace.as_deref())
+        .resolve_api(context, api_version, kind, namespace)
         .await?;
     let list = api.list(&ListParams::default()).await?;
     Ok(list
@@ -310,7 +388,14 @@ pub async fn get_list_columns(
 ) -> Result<Vec<PrinterColumn>> {
     let client = state.manager.client(&context)?;
     let cache = state.manager.discovery(&context).await?;
-    printer_columns::get_list_columns(client, &cache, &api_version, &kind).await
+    if let Some(index) = state.manager.namespace_index(&context) {
+        if index.has_terminating() && index.active.is_empty() {
+            return Ok(Vec::new());
+        }
+    }
+    // Sample one active namespace so column discovery does not scan Terminating ones.
+    let sample = sample_namespace(&state, &context);
+    printer_columns::get_list_columns(client, &cache, &api_version, &kind, sample.as_deref()).await
 }
 
 #[tauri::command]
@@ -323,6 +408,60 @@ pub async fn list_resource_table(
 ) -> Result<ResourceTable> {
     let client = state.manager.client(&context)?;
     let cache = state.manager.discovery(&context).await?;
+    if let Some(NamespaceScope::Only(names)) = bulk_scope(&state, &context, namespace.as_deref())
+        .filter(|_| {
+            cache
+                .resolve(&api_version, &kind)
+                .ok()
+                .flatten()
+                .map(|(_, namespaced)| namespaced)
+                .unwrap_or(true)
+        })
+    {
+        return list_table_in_namespaces(client, &cache, &api_version, &kind, &names).await;
+    }
     printer_columns::list_resource_table(client, &cache, &api_version, &kind, namespace.as_deref())
         .await
+}
+
+async fn list_table_in_namespaces(
+    client: kube::Client,
+    cache: &crate::k8s::discovery::DiscoveryCache,
+    api_version: &str,
+    kind: &str,
+    names: &[String],
+) -> Result<ResourceTable> {
+    if names.is_empty() {
+        return Ok(ResourceTable {
+            columns: Vec::new(),
+            rows: Vec::new(),
+        });
+    }
+    let mut columns = Vec::new();
+    let mut rows = Vec::new();
+    for chunk in names.chunks(namespaces::BULK_CONCURRENCY) {
+        let parts = futures::future::join_all(chunk.iter().map(|ns| {
+            let client = client.clone();
+            let ns = ns.clone();
+            async move {
+                printer_columns::list_resource_table(
+                    client,
+                    cache,
+                    api_version,
+                    kind,
+                    Some(ns.as_str()),
+                )
+                .await
+            }
+        }))
+        .await;
+        for part in parts {
+            let table = part?;
+            if columns.is_empty() {
+                columns = table.columns;
+            }
+            rows.extend(table.rows);
+        }
+    }
+    Ok(ResourceTable { columns, rows })
 }
