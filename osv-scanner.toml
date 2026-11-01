@@ -10,21 +10,17 @@ id = "RUSTSEC-2024-0370"
 reason = "proc-macro-error is unmaintained; build-time only, no patched crate."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2025-0081"
-reason = "unic-char-property is unmaintained; transitive, no patched crate."
+id = "RUSTSEC-2024-0449"
+reason = "unsafe-libyaml is unmaintained; pulled in by serde_yaml 0.9. No patched release on that line."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2025-0075"
-reason = "unic-char-range is unmaintained; transitive, no patched crate."
+id = "RUSTSEC-2026-0370"
+reason = "zvariant is unmaintained and folded into zbus 6. Tauri 2 still pins zbus 5."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2025-0080"
-reason = "unic-common is unmaintained; transitive, no patched crate."
+id = "RUSTSEC-2026-0371"
+reason = "zbus_names is unmaintained and folded into zbus 6. Tauri 2 still pins zbus 5."
 
 [[IgnoredVulns]]
-id = "RUSTSEC-2025-0100"
-reason = "unic-ucd-ident is unmaintained; transitive, no patched crate."
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2025-0098"
-reason = "unic-ucd-version is unmaintained; transitive, no patched crate."
+id = "RUSTSEC-2026-0372"
+reason = "zvariant_derive is unmaintained and folded into zbus 6. Tauri 2 still pins zbus 5."
