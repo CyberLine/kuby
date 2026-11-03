@@ -12,10 +12,10 @@ export function NamespacePicker() {
   const access = () => store.namespaceAccess[ctx()];
   const restricted = () => Boolean(access()?.restricted);
   const nsLoading = () => store.namespacesLoading();
-  const selectedExtras = createMemo(() => {
-    const selected = new Set(store.selectedNamespaces[ctx()] || []);
-    return (store.extraNamespaces[ctx()] || []).filter((n) => selected.has(n));
-  });
+  const selectedSet = createMemo(() => new Set(store.selectedNamespaces[ctx()] || []));
+  const selectedExtras = createMemo(() =>
+    (store.extraNamespaces[ctx()] || []).filter((n) => selectedSet().has(n)),
+  );
 
   createEffect(() => {
     if (!dialogOpen()) return;
@@ -100,18 +100,19 @@ export function NamespacePicker() {
           multiple
           class="ns-select"
           disabled={nsLoading()}
-          value={store.selectedNamespaces[ctx()] || []}
           onChange={(e) => {
             const opts = Array.from(e.currentTarget.selectedOptions).map((o) => o.value);
             store.setSelectedNamespaces(ctx(), opts);
           }}
         >
           <Show when={!restricted()}>
-            <option value="*">All namespaces</option>
+            <option value="*" selected={selectedSet().has("*")}>
+              All namespaces
+            </option>
           </Show>
           <For each={store.namespaces[ctx()] || []}>
             {(ns) => (
-              <option value={ns}>
+              <option value={ns} selected={selectedSet().has(ns)}>
                 {ns}
                 {store.isExtraNamespace(ctx(), ns) ? " (local)" : ""}
               </option>

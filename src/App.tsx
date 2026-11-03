@@ -29,6 +29,7 @@ import { LogViewer } from "./components/LogViewer";
 import { LonghornOverviewView } from "./components/LonghornOverviewView";
 import { NamespaceGraphView } from "./components/NamespaceGraphView";
 import { NamespacePicker } from "./components/NamespacePicker";
+import { NetworkPolicyDetail } from "./components/NetworkPolicyDetail";
 import { NodeDetailView } from "./components/NodeDetailView";
 import { OverviewView } from "./components/OverviewView";
 import { PodContainersSection } from "./components/PodContainersSection";
@@ -3507,6 +3508,16 @@ function App() {
                                                         ] || []
                                                       }
                                                       allObjects={[]}
+                                                      openRelation={openRelation}
+                                                    />
+                                                  </Show>
+                                                  <Show
+                                                    when={
+                                                      store.selectedKind().kind === "NetworkPolicy"
+                                                    }
+                                                  >
+                                                    <NetworkPolicyDetail
+                                                      obj={obj()}
                                                       openRelation={openRelation}
                                                     />
                                                   </Show>
