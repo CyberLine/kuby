@@ -33,7 +33,7 @@ parking_lot = "0.12"
 tracing = "0.1"
 similar = "3"
 kube = { version = "4", default-features = true, features = ["runtime", "derive", "ws", "oidc", "oauth", "jsonpatch"] }
-json-patch = "4"
+json-patch = "5"
 k8s-openapi = { version = "0.28", features = ["latest"] }
 # Needed to install a process-level CryptoProvider (kube=ring, sentry=aws-lc-rs).
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
