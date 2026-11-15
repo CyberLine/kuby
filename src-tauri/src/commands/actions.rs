@@ -131,7 +131,7 @@ pub async fn rollback_deployment(
     let rs_api: Api<ReplicaSet> = Api::namespaced(client, &namespace);
     let deploy = deploy_api.get(&name).await?;
 
-    if deploy.spec.as_ref().and_then(|s| s.paused).unwrap_or(false) {
+    if deploy.spec.paused.unwrap_or(false) {
         return Err(KubyError::Message(format!(
             "Deployment \"{name}\" is paused; resume it before rolling back"
         )));
@@ -154,21 +154,18 @@ pub async fn rollback_deployment(
     let rs_name = target.name_any();
     let mut template = target
         .spec
-        .as_ref()
-        .and_then(|s| s.template.clone())
+        .template
+        .clone()
         .ok_or_else(|| KubyError::from("ReplicaSet has no pod template"))?;
     strip_pod_template_hash(&mut template);
 
-    let current_template = deploy.spec.as_ref().map(|s| &s.template);
-    if let Some(current) = current_template {
-        if templates_equal_ignore_hash(&template, current) {
-            return Ok(RollbackResult {
-                skipped: true,
-                revision,
-                deployment: name,
-                replicaset: rs_name,
-            });
-        }
+    if templates_equal_ignore_hash(&template, &deploy.spec.template) {
+        return Ok(RollbackResult {
+            skipped: true,
+            revision,
+            deployment: name,
+            replicaset: rs_name,
+        });
     }
 
     let annotations = rollback_annotations(&deploy, target);
@@ -214,7 +211,7 @@ async fn list_owned_replica_sets(
 }
 
 fn deploy_match_labels(deploy: &Deployment) -> Option<String> {
-    let labels = deploy.spec.as_ref()?.selector.match_labels.as_ref()?;
+    let labels = deploy.spec.selector.match_labels.as_ref()?;
     if labels.is_empty() {
         return None;
     }

@@ -329,7 +329,7 @@ fn pod_card(pods: &[Pod]) -> OverviewCard {
 fn workload_card(kind: &str, items: &[Deployment]) -> OverviewCard {
     let mut map = HashMap::new();
     for d in items {
-        let desired = d.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+        let desired = d.spec.replicas.unwrap_or(0);
         let available = d
             .status
             .as_ref()
@@ -360,7 +360,7 @@ fn replicaset_owned_by_deployment(rs: &ReplicaSet) -> bool {
 fn replicaset_card(items: &[ReplicaSet]) -> OverviewCard {
     let mut map = HashMap::new();
     for rs in items {
-        let desired = rs.spec.as_ref().and_then(|s| s.replicas).unwrap_or(0);
+        let desired = rs.spec.replicas.unwrap_or(0);
         let ready = rs
             .status
             .as_ref()

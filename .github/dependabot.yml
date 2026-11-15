@@ -11,6 +11,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    ignore:
+      # kube 5.1 still depends on json-patch 4. A direct major bump does not compile.
+      - dependency-name: json-patch
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: /
