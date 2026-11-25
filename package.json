@@ -38,7 +38,7 @@
     "@xterm/xterm": "^6.0.0",
     "codemirror": "^6.0.2",
     "d3-force": "^3.0.0",
-    "solid-js": "^1.9.19"
+    "solid-js": "^1.9.20"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.7",
